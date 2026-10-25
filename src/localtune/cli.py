@@ -1,9 +1,10 @@
 """The localtune terminal command."""
 
-# Everything a person types in the terminal ("localtune info", "localtune monitor", and later
-# "run", "doctor" and "results") starts here. This file only handles the conversation with the
-# person: it asks other modules for the actual work (hardware.py for the computer's details,
-# gpu_monitor.py, cost.py and prices.py for GPU readings and their cost) and shows the answers.
+# Everything a person types in the terminal ("localtune info", "localtune doctor",
+# "localtune monitor", and later "run" and "results") starts here. This file only handles the
+# conversation with the person: it asks other modules for the actual work (hardware.py for the
+# computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
+# doctor.py for whether the computer is ready) and shows the answers.
 
 import time
 
@@ -14,6 +15,7 @@ from rich.table import Table
 
 from localtune import __version__
 from localtune.cost import energy_cost, hourly_cost
+from localtune.doctor import is_ready, run_checks
 from localtune.gpu_monitor import GpuMonitor
 from localtune.hardware import detect_hardware
 from localtune.prices import find_price
@@ -55,6 +57,34 @@ def info() -> None:
     for gpu in hw.gpus:
         gpus.add_row(str(gpu.index), gpu.name, f"{gpu.vram_gb} GB", gpu.driver_version)
     console.print(gpus)
+
+
+# "localtune doctor": checks everything a benchmark needs and shows what to fix. It ends with
+# an error code when the computer isn't ready, so scripts (like a rented-GPU setup) can stop
+# early instead of benchmarking on a broken setup.
+
+STATUS_MARKS = {"ok": "[green]✓[/green]", "warn": "[yellow]![/yellow]", "fail": "[red]✗[/red]"}
+
+
+@app.command()
+def doctor() -> None:
+    """Check that this computer is ready to benchmark, and what to fix if not."""
+    checks = run_checks()
+
+    table = Table(title="localtune doctor", show_header=False)
+    for check in checks:
+        detail = check.detail + (f"\n[dim]{check.fix}[/dim]" if check.fix else "")
+        table.add_row(STATUS_MARKS[check.status], check.name, detail)
+    console.print(table)
+
+    if is_ready(checks):
+        console.print("Ready to benchmark.")
+    elif any(check.status == "fail" for check in checks):
+        console.print("Not ready to benchmark: fix the items marked ✗.")
+        raise typer.Exit(1)
+    else:
+        console.print("Not ready to benchmark: needs llama.cpp or a running local AI server.")
+        raise typer.Exit(1)
 
 
 # "localtune monitor": watches the GPU for a few seconds and shows what it used and what that

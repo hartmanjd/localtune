@@ -7,6 +7,7 @@ import itertools
 from typer.testing import CliRunner
 
 from localtune import cli
+from localtune.doctor import Check
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
 
@@ -94,3 +95,32 @@ def test_monitor_with_a_zip_code(monkeypatch):
     result = runner.invoke(cli.app, ["monitor", "--seconds", "0.05", "--zip", "90210"])
     assert result.exit_code == 0
     assert "zip 90210 (CA)" in result.output
+
+
+def fake_checks(*statuses):
+    return lambda: [
+        Check(name=name, status=status, detail="detail", fix="what to do")
+        for name, status in zip(("NVIDIA GPU", "llama-bench"), statuses, strict=False)
+    ]
+
+
+def test_doctor_when_ready(monkeypatch):
+    monkeypatch.setattr(cli, "run_checks", fake_checks("ok", "ok"))
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0
+    assert "Ready to benchmark" in result.output
+
+
+def test_doctor_shows_what_to_fix(monkeypatch):
+    monkeypatch.setattr(cli, "run_checks", fake_checks("fail", "ok"))
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 1
+    assert "what to do" in result.output
+    assert "fix the items marked" in result.output
+
+
+def test_doctor_without_an_engine(monkeypatch):
+    monkeypatch.setattr(cli, "run_checks", fake_checks("ok", "warn"))
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 1
+    assert "needs llama.cpp or a running local AI server" in result.output
