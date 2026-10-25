@@ -1,9 +1,9 @@
-"""Detect the computer localbench is running on: OS, CPU, RAM and NVIDIA GPUs."""
+"""Detect the computer localtune is running on: OS, CPU, RAM and NVIDIA GPUs."""
 
 # Every benchmark result is only meaningful next to the hardware that produced it, and later the
 # prediction models learn from exactly these details. This module gathers them. It only reads,
 # never changes anything, and when something can't be found (no NVIDIA card, an unusual OS) it
-# leaves that field empty instead of crashing, so localbench still works on any machine.
+# leaves that field empty instead of crashing, so localtune still works on any machine.
 
 import os
 import platform
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-# The shape of the hardware information. Other parts of localbench (the terminal command now,
+# The shape of the hardware information. Other parts of localtune (the terminal command now,
 # saved benchmark runs later) rely on these exact fields, so they are defined once, here.
 
 

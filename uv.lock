@@ -60,7 +60,7 @@ wheels = [
 ]
 
 [[package]]
-name = "localbench"
+name = "localtune"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

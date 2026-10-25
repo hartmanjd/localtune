@@ -1,6 +1,6 @@
 # Tests for turning energy into money, using round numbers whose answers are easy to check.
 
-from localbench.cost import DEFAULT_PRICE, ElectricityPrice, energy_cost, hourly_cost
+from localtune.cost import DEFAULT_PRICE, ElectricityPrice, energy_cost, hourly_cost
 
 PRICE = ElectricityPrice(per_kwh=0.20, source="test")
 

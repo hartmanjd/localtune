@@ -1,6 +1,6 @@
-"""The localbench terminal command."""
+"""The localtune terminal command."""
 
-# Everything a person types in the terminal ("localbench info", "localbench monitor", and later
+# Everything a person types in the terminal ("localtune info", "localtune monitor", and later
 # "run", "doctor" and "results") starts here. This file only handles the conversation with the
 # person: it asks other modules for the actual work (hardware.py for the computer's details,
 # gpu_monitor.py, cost.py and prices.py for GPU readings and their cost) and shows the answers.
@@ -12,11 +12,11 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
-from localbench import __version__
-from localbench.cost import energy_cost, hourly_cost
-from localbench.gpu_monitor import GpuMonitor
-from localbench.hardware import detect_hardware
-from localbench.prices import find_price
+from localtune import __version__
+from localtune.cost import energy_cost, hourly_cost
+from localtune.gpu_monitor import GpuMonitor
+from localtune.hardware import detect_hardware
+from localtune.prices import find_price
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -27,7 +27,7 @@ def main() -> None:
     """Benchmark local LLMs on your own hardware."""
 
 
-# "localbench info": shows what localbench can see about this computer, the same details that
+# "localtune info": shows what localtune can see about this computer, the same details that
 # will be saved with every benchmark run.
 
 
@@ -36,7 +36,7 @@ def info() -> None:
     """Show this computer's OS, CPU, RAM and GPUs."""
     hw = detect_hardware()
 
-    system = Table(title=f"localbench {__version__}", show_header=False)
+    system = Table(title=f"localtune {__version__}", show_header=False)
     system.add_row("OS", hw.os + (" (WSL)" if hw.is_wsl else ""))
     system.add_row("CPU", hw.cpu_name or "unknown")
     system.add_row("CPU threads", str(hw.cpu_threads or "unknown"))
@@ -57,7 +57,7 @@ def info() -> None:
     console.print(gpus)
 
 
-# "localbench monitor": watches the GPU for a few seconds and shows what it used and what that
+# "localtune monitor": watches the GPU for a few seconds and shows what it used and what that
 # cost, the same measurements that will be taken while every benchmark runs. Handy for seeing
 # the readings work, or for watching the GPU while something else (a game, a model) is running.
 
@@ -73,7 +73,7 @@ def monitor(
     price: float | None = typer.Option(
         None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
     ),
-    gpu: int = typer.Option(0, help="Which GPU to watch, by its # from 'localbench info'."),
+    gpu: int = typer.Option(0, help="Which GPU to watch, by its # from 'localtune info'."),
 ) -> None:
     """Watch the GPU's power, memory, load and temperature, and what the power costs."""
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)

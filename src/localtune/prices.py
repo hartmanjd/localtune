@@ -1,7 +1,7 @@
 """Look up a local electricity price by zip code, state or country."""
 
 # Electricity prices vary a lot from place to place, so a national average can be far off.
-# This module finds the closest price localbench knows for where you are, from small tables
+# This module finds the closest price localtune knows for where you are, from small tables
 # shipped inside the package (built from public data by scripts/build_price_tables.py):
 # your zip code first, then your state or country, then the US average. A price you type in
 # yourself always wins. Whatever it picks comes back as an ElectricityPrice (cost.py) that
@@ -10,14 +10,14 @@
 import csv
 from importlib.resources import files
 
-from localbench.cost import DEFAULT_PRICE, ElectricityPrice
+from localtune.cost import DEFAULT_PRICE, ElectricityPrice
 
-# The tables live in src/localbench/data/:
+# The tables live in src/localtune/data/:
 #   prices_us_zips.csv       zip, state, per_kwh  (NREL utility rates, brought up to date with EIA)
 #   prices_us_states.csv     state, per_kwh, period  (EIA monthly state averages)
 #   prices_countries.csv     country, per_kwh, currency, period  (Eurostat household prices)
 
-DATA_DIR = files("localbench") / "data"
+DATA_DIR = files("localtune") / "data"
 
 
 def read_table(name: str, key: str) -> dict[str, dict[str, str]]:
