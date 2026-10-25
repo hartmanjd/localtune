@@ -129,7 +129,7 @@ def test_doctor_without_an_engine(monkeypatch):
     monkeypatch.setattr(cli, "run_checks", fake_checks("ok", "warn"))
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
-    assert "needs llama.cpp or a running local AI server" in result.output
+    assert "needs llama.cpp" in result.output
 
 
 def missing_llama_cpp(monkeypatch, installed):

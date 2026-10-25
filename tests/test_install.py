@@ -18,6 +18,13 @@ NVIDIA_SMI_HEADER = """
 """
 
 
+NEWER_NVIDIA_SMI_HEADER = """
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 615.65.06              KMD Version: 616.56        CUDA UMD Version: 13.4     |
++-----------------------------------------------------------------------------------------+
+"""
+
+
 @pytest.fixture(autouse=True)
 def temporary_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
@@ -56,6 +63,7 @@ def release(tmp_path, monkeypatch):
 
 def test_reads_the_drivers_cuda_version():
     assert install.parse_cuda_version(NVIDIA_SMI_HEADER) == (13, 0)
+    assert install.parse_cuda_version(NEWER_NVIDIA_SMI_HEADER) == (13, 4)
     assert install.parse_cuda_version("no version here") is None
 
 

@@ -56,11 +56,12 @@ class InstallError(Exception):
 
 # Picking the build. Ready-made builds exist for Linux (which includes WSL) on x86-64 PCs.
 # NVIDIA's driver says which CUDA version it supports (the "CUDA Version" that nvidia-smi
-# prints), and the build must not need a newer one. Older drivers are asked to update instead.
+# prints, called "CUDA UMD Version" by newer drivers), and the build must not need a newer one.
+# Older drivers are asked to update instead.
 
 
 def parse_cuda_version(nvidia_smi_output: str) -> tuple[int, int] | None:
-    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", nvidia_smi_output)
+    match = re.search(r"CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)", nvidia_smi_output)
     return (int(match[1]), int(match[2])) if match else None
 
 
