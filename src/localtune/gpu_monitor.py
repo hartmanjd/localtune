@@ -37,6 +37,7 @@ class GpuSummary(BaseModel):
     avg_power_w: float | None
     peak_power_w: float | None
     energy_wh: float | None
+    busy_avg_power_w: float | None = None
     baseline_vram_gb: float
     peak_vram_gb: float
     added_vram_gb: float
@@ -89,7 +90,11 @@ def read_sample(nvidia_smi: Path, gpu_index: int = 0) -> GpuSample | None:
 # Boiling many readings down to one summary. Energy is power added up over time: each gap
 # between two readings contributes its average power times its length. The "baseline" is a
 # reading taken before the model loads, so the memory the model itself adds can be told apart
-# from memory other programs were already using.
+# from memory other programs were already using. "Busy" power averages only the readings where
+# the GPU was actually working, leaving out quiet moments like loading a model from disk, so
+# the energy of the work itself can be told apart from the whole run's (results.py uses it).
+
+BUSY_UTILIZATION_PCT = 20
 
 
 def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> GpuSummary | None:
@@ -106,6 +111,11 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
         )
         energy_wh = joules / 3600
 
+    busy = [
+        s.power_w
+        for s in samples
+        if s.power_w is not None and s.utilization_pct >= BUSY_UTILIZATION_PCT
+    ]
     peak_vram = max(s.vram_used_gb for s in samples)
     return GpuSummary(
         duration_s=samples[-1].time_s - samples[0].time_s,
@@ -113,6 +123,7 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
         avg_power_w=sum(powers) / len(powers) if powers else None,
         peak_power_w=max(powers) if powers else None,
         energy_wh=energy_wh,
+        busy_avg_power_w=sum(busy) / len(busy) if busy else None,
         baseline_vram_gb=baseline.vram_used_gb,
         peak_vram_gb=peak_vram,
         added_vram_gb=max(0.0, peak_vram - baseline.vram_used_gb),

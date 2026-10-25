@@ -71,6 +71,13 @@ def test_energy_and_cost_per_million_tokens():
     assert energy.price == PRICE
 
 
+def test_busy_time_leaves_out_model_loading():
+    # 300 W busy for 60 s = 5 Wh, even though the whole run (loading included) used 50 Wh.
+    gpu = gpu_summary(50).model_copy(update={"busy_avg_power_w": 300})
+    speed = SPEED.model_copy(update={"busy_s": 60})
+    assert results.energy_and_cost(gpu, speed, PRICE).kwh == pytest.approx(0.005)
+
+
 def test_no_power_reading_keeps_the_price_but_no_cost():
     energy = results.energy_and_cost(gpu_summary(None), SPEED, PRICE)
     assert energy.kwh is None
