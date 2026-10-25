@@ -143,10 +143,11 @@ def find_local_servers(
     return found
 
 
-# Ready means nothing failed and there is at least one engine to run a model with. When
-# llama.cpp is the missing piece on a computer with a working GPU, install.py can fill it in.
+# Ready means nothing failed and llama-bench is there, the engine "localtune run" uses. A running
+# local AI server is shown but can't be benchmarked yet. When llama.cpp is the missing piece on
+# a computer with a working GPU, install.py can fill it in.
 
-ENGINE_CHECKS = ("llama-bench", "Local AI server")
+ENGINE_CHECKS = ("llama-bench",)
 
 
 def needs_llama_cpp(checks: list[Check]) -> bool:
