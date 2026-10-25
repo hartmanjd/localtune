@@ -23,6 +23,7 @@ def small_tables(tmp_path, monkeypatch):
 def test_zip_comes_first():
     price = prices.find_price(zip_code="43210", state="CA")
     assert price.per_kwh == 0.171
+    assert price.kind == "zip"
     assert "zip 43210" in price.source
 
 
@@ -41,6 +42,7 @@ def test_country_keeps_its_currency():
 def test_your_price_always_wins():
     price = prices.find_price(zip_code="43210", your_price=0.10)
     assert price.per_kwh == 0.10
+    assert price.kind == "yours"
     assert price.source == "your price"
 
 
@@ -55,6 +57,7 @@ def test_nothing_given_uses_the_us_average():
 def test_nothing_found_uses_the_us_average_and_says_so():
     price = prices.find_price(zip_code="99999")
     assert price.per_kwh == DEFAULT_PRICE.per_kwh
+    assert price.kind == "us_average"
     assert "99999 not found" in price.source
 
 

@@ -2,7 +2,7 @@
 
 from localtune.cost import DEFAULT_PRICE, ElectricityPrice, energy_cost, hourly_cost
 
-PRICE = ElectricityPrice(per_kwh=0.20, source="test")
+PRICE = ElectricityPrice(per_kwh=0.20, kind="yours", source="test")
 
 
 def test_energy_cost():
