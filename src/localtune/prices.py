@@ -31,6 +31,7 @@ def state_price(state: str) -> ElectricityPrice | None:
         return None
     return ElectricityPrice(
         per_kwh=float(row["per_kwh"]),
+        kind="state",
         source=f"{row['state']} average, EIA {row['period']}",
     )
 
@@ -43,6 +44,7 @@ def zip_price(zip_code: str) -> ElectricityPrice | None:
     period = states[row["state"]]["period"] if row["state"] in states else "2023"
     return ElectricityPrice(
         per_kwh=float(row["per_kwh"]),
+        kind="zip",
         source=f"zip {row['zip']} ({row['state']}), NREL utility rates adjusted to EIA {period}",
     )
 
@@ -54,6 +56,7 @@ def country_price(country: str) -> ElectricityPrice | None:
     return ElectricityPrice(
         per_kwh=float(row["per_kwh"]),
         currency=row["currency"],
+        kind="country",
         source=f"{row['country']} average, Eurostat {row['period']}",
     )
 
@@ -69,7 +72,7 @@ def find_price(
     your_price: float | None = None,
 ) -> ElectricityPrice:
     if your_price is not None:
-        return ElectricityPrice(per_kwh=your_price, source="your price")
+        return ElectricityPrice(per_kwh=your_price, kind="yours", source="your price")
 
     not_found = []
     for given, lookup in ((zip_code, zip_price), (state, state_price), (country, country_price)):
