@@ -6,18 +6,26 @@
 # computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
 # doctor.py for whether the computer is ready) and shows the answers.
 
+import sys
 import time
 
 import typer
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TextColumn
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
 
 from localtune import __version__
 from localtune.cost import energy_cost, hourly_cost
-from localtune.doctor import is_ready, run_checks
+from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gpu_monitor import GpuMonitor
 from localtune.hardware import detect_hardware
+from localtune.install import DOWNLOAD_MB, InstallError, choose_build, install_llama_cpp
 from localtune.prices import find_price
 
 app = typer.Typer(no_args_is_help=True)
@@ -59,23 +67,27 @@ def info() -> None:
     console.print(gpus)
 
 
-# "localtune doctor": checks everything a benchmark needs and shows what to fix. It ends with
-# an error code when the computer isn't ready, so scripts (like a rented-GPU setup) can stop
-# early instead of benchmarking on a broken setup.
+# "localtune doctor": checks everything a benchmark needs and shows what to fix. When llama.cpp
+# is missing on a computer with a working GPU, it offers to install it (install.py), then checks
+# again. It ends with an error code when the computer isn't ready, so scripts (like a
+# rented-GPU setup) can stop early instead of benchmarking on a broken setup.
 
 STATUS_MARKS = {"ok": "[green]✓[/green]", "warn": "[yellow]![/yellow]", "fail": "[red]✗[/red]"}
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    install: bool = typer.Option(
+        False, "--install", help="Install llama.cpp without asking, if it's missing."
+    ),
+) -> None:
     """Check that this computer is ready to benchmark, and what to fix if not."""
     checks = run_checks()
+    show_checks(checks)
 
-    table = Table(title="localtune doctor", show_header=False)
-    for check in checks:
-        detail = check.detail + (f"\n[dim]{check.fix}[/dim]" if check.fix else "")
-        table.add_row(STATUS_MARKS[check.status], check.name, detail)
-    console.print(table)
+    if needs_llama_cpp(checks) and offer_llama_cpp(ask=not install):
+        checks = run_checks()
+        show_checks(checks)
 
     if is_ready(checks):
         console.print("Ready to benchmark.")
@@ -85,6 +97,61 @@ def doctor() -> None:
     else:
         console.print("Not ready to benchmark: needs llama.cpp or a running local AI server.")
         raise typer.Exit(1)
+
+
+def show_checks(checks) -> None:
+    table = Table(title="localtune doctor", show_header=False)
+    for check in checks:
+        detail = check.detail + (f"\n[dim]{check.fix}[/dim]" if check.fix else "")
+        table.add_row(STATUS_MARKS[check.status], check.name, detail)
+    console.print(table)
+
+
+# Installing llama.cpp from doctor: says what will be downloaded and asks first (unless
+# --install was given, or nobody is there to answer), then shows each download's progress.
+# Returns whether llama.cpp got installed.
+
+
+def can_ask() -> bool:
+    return sys.stdin.isatty()
+
+
+def offer_llama_cpp(ask: bool) -> bool:
+    try:
+        build = choose_build()
+    except InstallError as error:
+        console.print(f"llama.cpp can't be installed automatically: {error}")
+        return False
+
+    if ask:
+        question = (
+            f"llama.cpp isn't installed. Download and install it now "
+            f"(about {DOWNLOAD_MB[build]} MB)?"
+        )
+        if not can_ask() or not typer.confirm(question, default=True):
+            return False
+
+    columns = (
+        TextColumn("{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+    )
+    with Progress(*columns, console=console, transient=True) as progress:
+        tasks = {}
+
+        def update(name: str, done: int, total: int) -> None:
+            if name not in tasks:
+                tasks[name] = progress.add_task(f"Downloading {name}", total=total or None)
+            progress.update(tasks[name], completed=done)
+
+        try:
+            folder = install_llama_cpp(build, update)
+        except (InstallError, OSError) as error:
+            console.print(f"Installing llama.cpp failed: {error}")
+            return False
+    console.print(f"Installed llama.cpp in {folder}")
+    return True
 
 
 # "localtune monitor": watches the GPU for a few seconds and shows what it used and what that

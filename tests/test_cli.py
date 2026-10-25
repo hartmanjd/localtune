@@ -124,3 +124,51 @@ def test_doctor_without_an_engine(monkeypatch):
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
     assert "needs llama.cpp or a running local AI server" in result.output
+
+
+def missing_llama_cpp(monkeypatch, installed):
+    # A computer with a GPU but no llama.cpp, until the (pretend) install runs.
+    def checks():
+        bench = "ok" if installed else "warn"
+        return fake_checks("ok", bench)()
+
+    def fake_install(build, progress):
+        installed.append(build)
+        progress("llama.tar.gz", 1, 1)
+        return "/home/you/.localtune/llama.cpp"
+
+    monkeypatch.setattr(cli, "run_checks", checks)
+    monkeypatch.setattr(cli, "choose_build", lambda: "cuda-13.4")
+    monkeypatch.setattr(cli, "install_llama_cpp", fake_install)
+
+
+def test_doctor_installs_llama_cpp_when_asked(monkeypatch):
+    installed = []
+    missing_llama_cpp(monkeypatch, installed)
+    result = runner.invoke(cli.app, ["doctor", "--install"])
+    assert installed == ["cuda-13.4"]
+    assert "Installed llama.cpp" in result.output
+    assert result.exit_code == 0
+
+
+def test_doctor_asks_before_installing(monkeypatch):
+    installed = []
+    missing_llama_cpp(monkeypatch, installed)
+    monkeypatch.setattr(cli, "can_ask", lambda: True)
+    result = runner.invoke(cli.app, ["doctor"], input="n\n")
+    assert "Download and install it now" in result.output
+    assert installed == []
+    assert result.exit_code == 1
+
+
+def test_doctor_explains_when_it_cant_install(monkeypatch):
+    installed = []
+    missing_llama_cpp(monkeypatch, installed)
+
+    def too_old():
+        raise cli.InstallError("Update the driver")
+
+    monkeypatch.setattr(cli, "choose_build", too_old)
+    result = runner.invoke(cli.app, ["doctor", "--install"])
+    assert "can't be installed automatically: Update the driver" in result.output
+    assert installed == []
