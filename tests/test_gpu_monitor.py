@@ -49,6 +49,11 @@ def test_summarize_energy_and_averages():
     assert summary.peak_temperature_c == 75
 
 
+def test_busy_power_leaves_out_quiet_readings():
+    samples = [sample(0, 60, utilization=2), sample(1, 280, utilization=97), sample(2, 300)]
+    assert gpu_monitor.summarize(samples).busy_avg_power_w == 290
+
+
 def test_summarize_without_power_leaves_energy_empty():
     summary = gpu_monitor.summarize([sample(0, None), sample(1, None)])
     assert summary.energy_wh is None

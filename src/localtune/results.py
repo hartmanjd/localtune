@@ -48,8 +48,8 @@ class RunSettings(BaseModel):
     ubatch_size: int | None = None
 
 
-# How fast it went: how many tokens were read and written, the speed of each, and the wait
-# before the first token appeared.
+# How fast it went: how many tokens were read and written, the speed of each, the wait
+# before the first token appeared, and how long the engine spent on those tokens ("busy").
 
 
 class Speed(BaseModel):
@@ -58,11 +58,15 @@ class Speed(BaseModel):
     prefill_tok_s: float | None = None
     decode_tok_s: float | None = None
     ttft_ms: float | None = None
+    busy_s: float | None = None
 
 
 # What the electricity came to. Energy is measured by the GPU monitor; cost is that energy at
 # the price used, and the price is saved with where it came from. "Per million tokens" counts
 # every token the run handled (prompt and answer), the unit paid AI services also price in.
+# When the engine says how long it spent on the tokens, the energy is the GPU's busy power over
+# that time, so loading the model doesn't count against the tokens; otherwise it is the energy
+# of the whole run.
 
 
 class EnergyCost(BaseModel):
@@ -77,6 +81,8 @@ def energy_and_cost(
     gpu: GpuSummary | None, speed: Speed | None, price: ElectricityPrice
 ) -> EnergyCost:
     energy_wh = gpu.energy_wh if gpu else None
+    if gpu and gpu.busy_avg_power_w is not None and speed and speed.busy_s:
+        energy_wh = gpu.busy_avg_power_w * speed.busy_s / 3600
     tokens = speed.prompt_tokens + speed.generated_tokens if speed else 0
     if energy_wh is None:
         return EnergyCost(
