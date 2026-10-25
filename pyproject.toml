@@ -6,7 +6,7 @@
 # of data a fixed, checked shape; typer turns Python functions into terminal commands; rich
 # prints tidy tables and colors in the terminal.
 [project]
-name = "localbench"
+name = "localtune"
 dynamic = ["version"]
 description = "Benchmark local LLMs on your own hardware: speed, memory use and power."
 readme = "README.md"
@@ -25,11 +25,15 @@ dependencies = [
 [project.scripts]
 localbench = "localbench.cli:app"
 
-# How the code in src/ gets bundled into an installable package. The version number is read
-# from the package itself, so it only ever has to be changed in one place.
+# How the code in src/ gets bundled into an installable package. The install name above
+# (localtune) differs from the code folder (src/localbench), so the folder is named here.
+# The version number is read from the package itself, so it only ever has to be changed in one place.
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localbench"]
 
 [tool.hatch.version]
 path = "src/localbench/__init__.py"
