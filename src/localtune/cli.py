@@ -1,13 +1,15 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune monitor", and later "run" and "results") starts here. This file only handles the
-# conversation with the person: it asks other modules for the actual work (hardware.py for the
-# computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
-# doctor.py for whether the computer is ready) and shows the answers.
+# "localtune run", "localtune monitor", and later "results") starts here. This file only handles
+# the conversation with the person: it asks other modules for the actual work (hardware.py for
+# the computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
+# doctor.py for whether the computer is ready, runners/ for benchmarks) and shows the answers.
 
 import sys
 import time
+from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -25,8 +27,22 @@ from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gpu_monitor import GpuMonitor
 from localtune.hardware import detect_hardware
-from localtune.install import DOWNLOAD_MB, InstallError, choose_build, install_llama_cpp
+from localtune.install import (
+    DOWNLOAD_MB,
+    InstallError,
+    choose_build,
+    find_tool,
+    install_llama_cpp,
+)
 from localtune.prices import find_price
+from localtune.results import RunResult, save_result
+from localtune.runners.base import measure
+from localtune.runners.llamacpp import (
+    KV_CACHE_TYPES,
+    BenchOptions,
+    requested_settings,
+    run_llama_bench,
+)
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -152,6 +168,111 @@ def offer_llama_cpp(ask: bool) -> bool:
             return False
     console.print(f"Installed llama.cpp in {folder}")
     return True
+
+
+# "localtune run": benchmarks one model file with llama.cpp and saves the result. While
+# llama-bench runs, the GPU is watched and the energy priced (runners/base.py); afterwards the
+# speeds, energy and cost are shown, and the run is added to the results file (results.py).
+# A failed run is saved too, and ends with an error code.
+
+
+@app.command()
+def run(
+    model: Annotated[Path, typer.Argument(help="The model file (.gguf) to benchmark.")],
+    prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
+    gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
+    repetitions: int = typer.Option(3, help="How many times each test is repeated."),
+    gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
+    cpu_moe: int | None = typer.Option(
+        None, help="Mixture-of-experts models: how many layers keep their experts in RAM."
+    ),
+    kv_cache: str | None = typer.Option(None, help="KV cache type, like f16, q8_0 or q4_0."),
+    flash_attn: bool | None = typer.Option(
+        None, "--flash-attn/--no-flash-attn", help="Turn flash attention on or off."
+    ),
+    threads: int | None = typer.Option(None, help="CPU threads to use."),
+    batch_size: int | None = typer.Option(None, help="Prompt batch size."),
+    ubatch_size: int | None = typer.Option(None, help="Prompt micro-batch size."),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+    zip_code: str | None = typer.Option(
+        None, "--zip", help="Your US zip code, for your local electricity price."
+    ),
+    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
+    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
+    price: float | None = typer.Option(
+        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
+    ),
+) -> None:
+    """Benchmark a model file with llama.cpp and save the result."""
+    llama_bench = find_tool("llama-bench")
+    if llama_bench is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    if not model.is_file():
+        console.print(f"Model file not found: {model}")
+        raise typer.Exit(1)
+    if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
+        console.print(f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_TYPES)}")
+        raise typer.Exit(1)
+
+    options = BenchOptions(
+        prompt_tokens=prompt_tokens,
+        gen_tokens=gen_tokens,
+        repetitions=repetitions,
+        gpu_layers=gpu_layers,
+        cpu_moe_layers=cpu_moe,
+        kv_cache=kv_cache,
+        flash_attention=flash_attn,
+        threads=threads,
+        batch_size=batch_size,
+        ubatch_size=ubatch_size,
+        gpu_index=gpu,
+    )
+    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
+
+    with console.status(f"Benchmarking {model.name} with llama.cpp..."):
+        result = measure(
+            lambda: run_llama_bench(llama_bench, model, options),
+            requested_settings(model, options),
+            electricity,
+            repetitions,
+            gpu_index=gpu,
+        )
+    path = save_result(result)
+
+    if result.status != "ok":
+        reason = "ran out of GPU memory" if result.status == "out_of_memory" else "failed"
+        console.print(f"The benchmark {reason}: {result.error}")
+        console.print(f"Saved the failed run to {path}")
+        raise typer.Exit(1)
+    show_run(result)
+    console.print(f"Saved to {path}")
+
+
+def show_run(result: RunResult) -> None:
+    speed, gpu, energy = result.speed, result.gpu, result.energy
+    unit = energy.price.currency
+    table = Table(title=f"{result.settings.model} ({result.settings.quant})", show_header=False)
+    table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
+    table.add_row("Decode", f"{speed.decode_tok_s:,.1f} tok/s")
+    table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
+    if gpu is not None:
+        table.add_row("Peak VRAM", f"{gpu.peak_vram_gb:.1f} GB")
+        if gpu.avg_power_w is not None:
+            table.add_row("Power", f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak")
+    if energy.kwh is not None:
+        table.add_row(
+            "Energy",
+            f"{energy.kwh * 1000:.2f} Wh ({energy.kwh_per_million_tokens:.3f} kWh per 1M tokens)",
+        )
+        table.add_row(
+            "Cost",
+            f"{energy.cost:.5f} {unit} ({energy.cost_per_million_tokens:.3f} {unit} per 1M tokens)",
+        )
+        table.add_row("Price used", f"{energy.price.per_kwh} {unit}/kWh ({energy.price.source})")
+    else:
+        table.add_row("Energy and cost", "unknown (no GPU power readings)")
+    console.print(table)
 
 
 # "localtune monitor": watches the GPU for a few seconds and shows what it used and what that

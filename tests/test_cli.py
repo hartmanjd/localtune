@@ -3,6 +3,7 @@
 # running them.
 
 import itertools
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -10,8 +11,13 @@ from localtune import cli
 from localtune.doctor import Check
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
+from localtune.results import load_results
+from localtune.runners.base import BackendError
+from localtune.runners.llamacpp import parse_output
 
 runner = CliRunner()
+
+EXAMPLE_RUN = (Path(__file__).parent / "data" / "llama_bench.json").read_text()
 
 FAKE_PC = HardwareInfo(
     os="Linux 6.6.87.2-microsoft-standard-WSL2",
@@ -172,3 +178,55 @@ def test_doctor_explains_when_it_cant_install(monkeypatch):
     result = runner.invoke(cli.app, ["doctor", "--install"])
     assert "can't be installed automatically: Update the driver" in result.output
     assert installed == []
+
+
+def fake_run(monkeypatch, tmp_path, outcome):
+    # 'localtune run' with a pretend llama-bench that gives back the saved example run, or fails.
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli, "find_tool", lambda name: "llama-bench")
+    monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
+    monkeypatch.setattr(cli, "run_llama_bench", outcome)
+    model = tmp_path / "llama-2-7b.Q4_0.gguf"
+    model.write_text("")
+    return model
+
+
+def example_run(llama_bench, model, options):
+    return parse_output(EXAMPLE_RUN, model, options.repetitions)
+
+
+def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    assert result.exit_code == 0
+    assert "7,612 tok/s" in result.output
+    assert "133.2 tok/s" in result.output
+    assert "Saved to" in result.output
+    assert load_results()[0].speed.decode_tok_s == 133.2
+
+
+def test_run_saves_a_failed_run(monkeypatch, tmp_path):
+    def out_of_memory(llama_bench, model, options):
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+
+    model = fake_run(monkeypatch, tmp_path, out_of_memory)
+    result = runner.invoke(cli.app, ["run", str(model)])
+    assert result.exit_code == 1
+    assert "ran out of GPU memory" in result.output
+    assert load_results()[0].status == "out_of_memory"
+
+
+def test_run_without_llama_cpp(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "find_tool", lambda name: None)
+    result = runner.invoke(cli.app, ["run", str(model)])
+    assert result.exit_code == 1
+    assert "localtune doctor" in result.output
+
+
+def test_run_refuses_an_unknown_kv_cache_type(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["run", str(model), "--kv-cache", "q9"])
+    assert result.exit_code == 1
+    assert "Unknown KV cache type" in result.output
+    assert load_results() == []
