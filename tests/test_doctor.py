@@ -48,11 +48,11 @@ def test_power_readings():
     assert doctor.check_power(None).status == "warn"
 
 
-def test_missing_tool_points_to_llama_cpp():
+def test_missing_tool_offers_the_install():
     assert doctor.check_tool("llama-bench", "/usr/bin/llama-bench").status == "ok"
     check = doctor.check_tool("llama-bench", None)
     assert check.status == "warn"
-    assert doctor.LLAMA_CPP_URL in check.fix
+    assert "install" in check.fix
 
 
 def test_low_disk_space_warns():
@@ -75,6 +75,14 @@ def test_ready_needs_an_engine():
     assert doctor.is_ready([ok("NVIDIA GPU"), ok("llama-bench")])
     assert doctor.is_ready([ok("NVIDIA GPU"), ok("Local AI server")])
     assert not doctor.is_ready([ok("NVIDIA GPU"), ok("Disk space")])
+
+
+def test_llama_cpp_is_offered_only_with_a_working_gpu():
+    missing = Check(name="llama-bench", status="warn", detail="")
+    no_gpu = Check(name="NVIDIA GPU", status="fail", detail="")
+    assert doctor.needs_llama_cpp([ok("NVIDIA GPU"), missing])
+    assert not doctor.needs_llama_cpp([ok("NVIDIA GPU"), ok("llama-bench")])
+    assert not doctor.needs_llama_cpp([no_gpu, missing])
 
 
 def test_any_failure_means_not_ready():

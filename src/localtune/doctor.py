@@ -18,9 +18,8 @@ from pydantic import BaseModel
 
 from localtune.gpu_monitor import GpuSample, read_sample
 from localtune.hardware import HardwareInfo, detect_hardware, find_nvidia_smi
+from localtune.install import find_tool
 from localtune.results import home_dir
-
-LLAMA_CPP_URL = "https://github.com/ggml-org/llama.cpp"
 
 # Model files are often 5 to 20 GB each, so less free space than this gets a warning.
 MIN_FREE_DISK_GB = 20
@@ -75,7 +74,7 @@ def check_tool(name: str, path: str | None) -> Check:
         name=name,
         status="warn",
         detail="not found",
-        fix=f"Get llama.cpp from {LLAMA_CPP_URL} and put its folder on your PATH.",
+        fix="localtune can install llama.cpp for you (answer y below, or use --install).",
     )
 
 
@@ -144,9 +143,15 @@ def find_local_servers(
     return found
 
 
-# Ready means nothing failed and there is at least one engine to run a model with.
+# Ready means nothing failed and there is at least one engine to run a model with. When
+# llama.cpp is the missing piece on a computer with a working GPU, install.py can fill it in.
 
 ENGINE_CHECKS = ("llama-bench", "Local AI server")
+
+
+def needs_llama_cpp(checks: list[Check]) -> bool:
+    status = {check.name: check.status for check in checks}
+    return status.get("NVIDIA GPU") == "ok" and status.get("llama-bench") != "ok"
 
 
 def is_ready(checks: list[Check]) -> bool:
@@ -170,8 +175,8 @@ def run_checks() -> list[Check]:
     return [
         check_gpu(detect_hardware(), nvidia_smi is not None),
         check_power(read_sample(nvidia_smi) if nvidia_smi else None),
-        check_tool("llama-bench", shutil.which("llama-bench")),
-        check_tool("llama-server", shutil.which("llama-server")),
+        check_tool("llama-bench", find_tool("llama-bench")),
+        check_tool("llama-server", find_tool("llama-server")),
         check_servers(find_local_servers()),
         check_disk(free_disk_gb(folder)),
         check_results_folder(folder),
