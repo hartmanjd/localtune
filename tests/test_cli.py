@@ -6,9 +6,9 @@ import itertools
 
 from typer.testing import CliRunner
 
-from localbench import cli
-from localbench.gpu_monitor import GpuMonitor, GpuSample
-from localbench.hardware import GpuInfo, HardwareInfo
+from localtune import cli
+from localtune.gpu_monitor import GpuMonitor, GpuSample
+from localtune.hardware import GpuInfo, HardwareInfo
 
 runner = CliRunner()
 

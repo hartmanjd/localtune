@@ -1,13 +1,13 @@
-"""Build localbench's electricity price tables from public data.
+"""Build localtune's electricity price tables from public data.
 
 Run from the project folder:
     uv run python scripts/build_price_tables.py
 """
 
-# localbench ships three small price tables (src/localbench/data/) so that nobody using it needs
+# localtune ships three small price tables (src/localtune/data/) so that nobody using it needs
 # an internet connection or an API key to get a local electricity price. This script makes those
 # tables from the original public data, and is re-run every few months to bring them up to date.
-# Only people working on localbench run it; users only ever read the finished tables.
+# Only people working on localtune run it; users only ever read the finished tables.
 #
 # Steps: download the raw files (or reuse ones already in raw-price-data/), boil each down to a
 # price per kWh per place, and write the three tables.
@@ -32,7 +32,7 @@ SOURCES = {
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "raw-price-data"
-OUT_DIR = ROOT / "src" / "localbench" / "data"
+OUT_DIR = ROOT / "src" / "localtune" / "data"
 NREL_YEAR = 2023
 
 

@@ -5,8 +5,8 @@
 import itertools
 import time
 
-from localbench import gpu_monitor
-from localbench.gpu_monitor import GpuMonitor, GpuSample
+from localtune import gpu_monitor
+from localtune.gpu_monitor import GpuMonitor, GpuSample
 
 
 def sample(time_s, power_w, vram_gb=2.0, utilization=50.0, temperature=60.0):

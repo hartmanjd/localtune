@@ -1,4 +1,4 @@
-# localbench
+# localtune
 
 Benchmark local LLMs on your own hardware, and find out which model, quantization and KV cache
 setting runs best on your machine.
@@ -17,7 +17,7 @@ Each run measures:
 
 ## Data sources
 
-Electricity cost uses the most local price localbench has: your zip code, then your state or
+Electricity cost uses the most local price localtune has: your zip code, then your state or
 country, then the US average. A price per kWh that you give yourself always replaces these.
 Each cost records which price it was based on.
 
@@ -28,7 +28,7 @@ Each cost records which price it was based on.
 | Countries | [Eurostat, electricity prices for household consumers (nrg_pc_204)](https://ec.europa.eu/eurostat/databrowser/view/nrg_pc_204/default/table), all taxes included, in euros | 41 European countries | CC BY 4.0 |
 | US average | [EIA Short-Term Energy Outlook](https://www.eia.gov/outlooks/steo/report/elec_coal_renew.php), October 2026 | Whole US | Public domain |
 
-The tables in `src/localbench/data/` are built from these sources by
+The tables in `src/localtune/data/` are built from these sources by
 `scripts/build_price_tables.py`.
 
 ## License

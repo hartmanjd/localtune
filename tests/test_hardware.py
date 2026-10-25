@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from localbench import hardware
+from localtune import hardware
 
 NVIDIA_SMI_OUTPUT = "0, NVIDIA GeForce RTX 4070 Ti SUPER, 16376, 581.57\n"
 

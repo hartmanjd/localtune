@@ -1,8 +1,8 @@
-# The project's ID card. Tools like uv and pip read this file to learn what localbench is,
+# The project's ID card. Tools like uv and pip read this file to learn what localtune is,
 # what it needs, and how to package it so anyone can install it.
 
-# Who and what localbench is: the facts shown when someone looks the package up or installs it.
-# "dependencies" are the outside libraries localbench needs to run: pydantic gives every piece
+# Who and what localtune is: the facts shown when someone looks the package up or installs it.
+# "dependencies" are the outside libraries localtune needs to run: pydantic gives every piece
 # of data a fixed, checked shape; typer turns Python functions into terminal commands; rich
 # prints tidy tables and colors in the terminal.
 [project]
@@ -20,25 +20,21 @@ dependencies = [
     "typer>=0.27.3",
 ]
 
-# Creates the "localbench" terminal command when the package is installed, and points it at
-# the app in src/localbench/cli.py.
+# Creates the "localtune" terminal command when the package is installed, and points it at
+# the app in src/localtune/cli.py.
 [project.scripts]
-localbench = "localbench.cli:app"
+localtune = "localtune.cli:app"
 
-# How the code in src/ gets bundled into an installable package. The install name above
-# (localtune) differs from the code folder (src/localbench), so the folder is named here.
-# The version number is read from the package itself, so it only ever has to be changed in one place.
+# How the code in src/ gets bundled into an installable package. The version number is read
+# from the package itself, so it only ever has to be changed in one place.
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/localbench"]
-
 [tool.hatch.version]
-path = "src/localbench/__init__.py"
+path = "src/localtune/__init__.py"
 
-# Tools for people working on localbench, not for people using it: pytest runs the tests in
+# Tools for people working on localtune, not for people using it: pytest runs the tests in
 # tests/, and ruff keeps the code free of common mistakes and consistently formatted.
 # The same checks run automatically on GitHub (see .github/workflows/ci.yml).
 [dependency-groups]

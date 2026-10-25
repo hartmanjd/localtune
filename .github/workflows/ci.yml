@@ -1,4 +1,4 @@
-# CI (continuous integration): GitHub's robot that re-checks localbench on a fresh computer
+# CI (continuous integration): GitHub's robot that re-checks localtune on a fresh computer
 # every time a change is proposed or lands on main. It catches problems that only show up on
 # someone else's machine before they reach main. A green check on a PR means all of this passed.
 name: CI
@@ -8,7 +8,7 @@ on:
     branches: [main]
   pull_request:
 
-# One run per Python version: the oldest and newest that localbench supports
+# One run per Python version: the oldest and newest that localtune supports
 # (requires-python in pyproject.toml), so it keeps working for users on either end.
 jobs:
   test:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from localbench.hardware import find_nvidia_smi
+from localtune.hardware import find_nvidia_smi
 
 # The shape of the data: one reading at a moment in time, and the summary of a whole run.
 # The summary is what gets saved with benchmark results later.

@@ -1,11 +1,11 @@
 # Tests for the price lookup. They swap the real tables for tiny ones written here, so they can
-# check the order localbench tries (zip, then state or country, then the US average, with your
+# check the order localtune tries (zip, then state or country, then the US average, with your
 # own price always winning) without depending on what the real data says this year.
 
 import pytest
 
-from localbench import prices
-from localbench.cost import DEFAULT_PRICE
+from localtune import prices
+from localtune.cost import DEFAULT_PRICE
 
 
 @pytest.fixture(autouse=True)
