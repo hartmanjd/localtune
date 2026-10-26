@@ -8,10 +8,11 @@
 # GPU's specs (gpus.py) to estimate speeds nobody has measured yet.
 #
 # The facts come from two tables shipped inside the package, made by
-# scripts/build_model_table.py from Hugging Face and Ollama (nothing in them is estimated):
-# models.csv has one row per model, model_files.csv one row per downloadable file of it.
-# A model can be looked up by its own name (Qwen3-14B) or by its Ollama name (qwen3:14b),
-# which also says which file Ollama downloads for that name.
+# scripts/build_model_table.py from the most downloaded models on Ollama and read from their
+# own files (nothing in them is estimated): models.csv has one row per model size, with its
+# place in Ollama's ranking, and model_files.csv one row per quantization of it. A model is
+# looked up by the name people type into Ollama: qwen3:14b, qwen3:14b-q8_0, or just qwen3 for
+# the size Ollama gives by default.
 
 import csv
 from functools import cache
@@ -23,13 +24,17 @@ from pydantic import BaseModel
 class ModelFile(BaseModel):
     quant: str
     size_bytes: int
-    ollama: str | None
+    ollama: str
     source: str
 
 
 class ModelSpec(BaseModel):
     name: str
-    hf_repo: str
+    family: str
+    popularity_rank: int
+    pulls: int
+    latest: bool
+    architecture: str
     params: int
     active_params: int
     layers: int
@@ -38,7 +43,6 @@ class ModelSpec(BaseModel):
     context_length: int | None
     experts: int | None
     experts_used: int | None
-    config_source: str
     files: list[ModelFile]
 
     def file(self, quant: str) -> ModelFile | None:
@@ -60,16 +64,17 @@ def load_model_table() -> tuple[ModelSpec, ...]:
     )
 
 
-# Ollama leaves off ":latest" when people type a name, so "gemma3" and "gemma3:latest" are
-# the same name.
+# A name with no size, like "gemma3" or "gemma3:latest", means the size Ollama downloads by
+# default for it. The file found is the one that exact name downloads.
 
 
-def find_model(name: str) -> tuple[ModelSpec, ModelFile | None] | None:
-    wanted = name.lower().removesuffix(":latest")
+def find_model(name: str) -> tuple[ModelSpec, ModelFile] | None:
+    wanted = name.lower()
+    family, _, tag = wanted.partition(":")
     for model in load_model_table():
+        if tag in ("", "latest") and model.family.lower() == family and model.latest:
+            return model, model.files[0]
         for f in model.files:
-            if f.ollama and f.ollama.lower().removesuffix(":latest") == wanted:
+            if f.ollama.lower() == wanted:
                 return model, f
-        if model.name.lower() == wanted:
-            return model, None
     return None
