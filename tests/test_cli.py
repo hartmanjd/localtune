@@ -247,7 +247,20 @@ def test_results_shows_saved_runs(monkeypatch, tmp_path):
     assert "Saved runs (1 of 1)" in result.output
     assert "7,612" in result.output
     assert "133.2" in result.output
-    assert "99 GPU layers, KV f16" in result.output
+    assert "GPU layers 99, KV f16" in result.output
+
+
+def test_results_shows_all_gpu_layers(monkeypatch, tmp_path):
+    # llama.cpp reports -1 GPU layers when every layer is on the GPU.
+    def all_layers(llama_bench, model, options):
+        output = EXAMPLE_RUN.replace('"n_gpu_layers": 99', '"n_gpu_layers": -1')
+        return parse_output(output, model, options.repetitions)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, all_layers)
+    runner.invoke(cli.app, ["run", str(model)])
+    result = runner.invoke(cli.app, ["results"])
+    assert "GPU layers all" in result.output
 
 
 def test_results_lists_failed_runs(monkeypatch, tmp_path):
