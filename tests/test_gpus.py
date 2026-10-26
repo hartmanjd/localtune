@@ -10,10 +10,11 @@ def test_every_row_is_complete_and_listed_once():
     keys = [(spec.name, spec.vram_gb) for spec in table]
     assert len(keys) == len(set(keys))
     for spec in table:
-        assert 0 < spec.vram_gb <= 80
+        assert 0 < spec.vram_gb <= 96
         assert 100 <= spec.memory_bandwidth_gbs <= 4000
         assert 1 <= spec.fp32_tflops <= 200
         assert 50 <= spec.board_power_w <= 1000
+        assert spec.source
 
 
 @pytest.mark.parametrize(

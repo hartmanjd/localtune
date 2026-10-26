@@ -9,9 +9,15 @@
 # "localtune info" shows them.
 #
 # The table is src/localtune/data/gpus.csv: NVIDIA GeForce RTX 20-50 cards plus the data
-# center GPUs common on rental sites, from NVIDIA's published specs. Memory bandwidths were
-# compared with llmfit's table (github.com/AlexsJones/llmfit, MIT license). Laptop
-# GPUs aren't included: they share names with desktop cards but have slower memory.
+# center GPUs common on rental sites. Each row says where its numbers come from, which is one
+# of NVIDIA's own spec pages, datasheets or architecture whitepapers. Where NVIDIA lists cores
+# and clock speed but not FP32 TFLOPS, the TFLOPS are worked out as cores x boost clock x 2.
+# Where NVIDIA doesn't list the memory bandwidth, the row says whether it matches llmfit's
+# table (github.com/AlexsJones/llmfit, MIT license) or was worked out from the memory bus
+# width NVIDIA lists and the card's memory speed. Laptop GPUs aren't included: they share names
+# with desktop cards but have slower memory. A few cards were also sold with slower memory
+# under the same name and size (an RTX 4070 with GDDR6, an RTX 3060 Ti with GDDR6X); the
+# table has the common version.
 
 import csv
 from importlib.resources import files
@@ -27,6 +33,7 @@ class GpuSpec(BaseModel):
     memory_bandwidth_gbs: float
     fp32_tflops: float
     board_power_w: float
+    source: str
 
 
 def load_gpu_table() -> list[GpuSpec]:
