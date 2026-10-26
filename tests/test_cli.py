@@ -232,9 +232,17 @@ def test_run_benchmarks_an_ollama_model_by_name(monkeypatch, tmp_path):
 def test_run_with_an_unknown_model(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: None)
-    result = runner.invoke(cli.app, ["run", "nothing:here"])
+    result = runner.invoke(cli.app, ["run", "qwen3:8b"])
     assert result.exit_code == 1
-    assert "Model not found: nothing:here" in result.output
+    assert "ollama pull qwen3:8b" in result.output
+
+
+def test_run_with_a_missing_model_file(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["run", "missing.gguf"])
+    assert result.exit_code == 1
+    assert "Model file not found: missing.gguf" in result.output
+    assert "ollama pull" not in result.output
 
 
 def test_run_without_llama_cpp(monkeypatch, tmp_path):

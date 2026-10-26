@@ -259,10 +259,7 @@ def run(
             raise typer.Exit(1)
         model_file, model_name = find_model_file(model)
         if model_file is None:
-            console.print(
-                f"Model not found: {model or 'none given'}. Give a model file (.gguf), "
-                "or the name of a model downloaded with Ollama, like qwen3:14b."
-            )
+            explain_missing_model(model)
             raise typer.Exit(1)
         if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
             console.print(
@@ -311,6 +308,19 @@ def find_model_file(model: str | None) -> tuple[Path | None, str | None]:
         return Path(model), None
     ollama_file = find_ollama_model(model)
     return (ollama_file, model) if ollama_file else (None, None)
+
+
+def explain_missing_model(model: str | None) -> None:
+    if model is None:
+        console.print(
+            "Name a model file (.gguf), or a model downloaded with Ollama, like qwen3:14b."
+        )
+    elif model.lower().endswith(".gguf"):
+        console.print(f"Model file not found: {model}")
+    else:
+        console.print(f"{model} isn't a model file or a model downloaded with Ollama.")
+        console.print("If it's an Ollama model, download it first, then run this again:")
+        console.print(f"  ollama pull {model}", markup=False, highlight=False)
 
 
 # For "-b api": finds the running server and the model in it to benchmark, or says what's
