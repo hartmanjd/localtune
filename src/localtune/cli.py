@@ -1,7 +1,7 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune run", "localtune monitor", and later "results") starts here. This file only handles
+# "localtune run", "localtune results" and "localtune monitor") starts here. This file only handles
 # the conversation with the person: it asks other modules for the actual work (hardware.py for
 # the computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
 # doctor.py for whether the computer is ready, runners/ for benchmarks) and shows the answers.
@@ -35,7 +35,7 @@ from localtune.install import (
     install_llama_cpp,
 )
 from localtune.prices import find_price
-from localtune.results import RunResult, save_result
+from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
 from localtune.runners.base import measure
 from localtune.runners.llamacpp import (
     KV_CACHE_TYPES,
@@ -273,6 +273,72 @@ def show_run(result: RunResult) -> None:
     else:
         table.add_row("Energy and cost", "unknown (no GPU power readings)")
     console.print(table)
+
+
+# "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
+# runs with different models and settings can be compared side by side. Failed runs are listed
+# too, because knowing which settings don't work is part of tuning.
+
+
+@app.command()
+def results() -> None:
+    """Show your saved benchmark runs."""
+    runs = load_results()
+    if not runs:
+        console.print("No saved runs yet. Benchmark a model with 'localtune run'.")
+        return
+    shown = runs
+
+    table = Table(
+        title=f"Saved runs ({len(shown)} of {len(runs)})",
+        caption="Prefill and decode in tokens per second",
+    )
+    table.add_column("When", no_wrap=True)
+    table.add_column("Model", overflow="fold")
+    for column in ("Quant", "Settings", "Result"):
+        table.add_column(column)
+    for column in ("Prefill", "Decode", "VRAM", "Cost/1M tok"):
+        table.add_column(column, justify="right")
+    for run in shown:
+        table.add_row(*result_row(run))
+    console.print(table)
+    console.print(f"From {results_file()}")
+
+
+RESULT_LABELS = {
+    "ok": "ok",
+    "out_of_memory": "[red]out of memory[/red]",
+    "crashed": "[red]crashed[/red]",
+}
+
+
+def result_row(run: RunResult) -> list[str]:
+    speed, gpu, energy = run.speed, run.gpu, run.energy
+    cost = energy.cost_per_million_tokens
+    return [
+        run.created_at.astimezone().strftime("%m-%d %H:%M"),
+        run.settings.model,
+        run.settings.quant or "",
+        settings_summary(run.settings),
+        RESULT_LABELS[run.status],
+        f"{speed.prefill_tok_s:,.0f}" if speed and speed.prefill_tok_s else "",
+        f"{speed.decode_tok_s:,.1f}" if speed and speed.decode_tok_s else "",
+        f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
+        f"{cost:.3f} {energy.price.currency}" if cost is not None else "",
+    ]
+
+
+def settings_summary(settings: RunSettings) -> str:
+    parts = []
+    if settings.gpu_layers is not None:
+        parts.append(f"{settings.gpu_layers} GPU layers")
+    if settings.cpu_moe_layers:
+        parts.append(f"{settings.cpu_moe_layers} expert layers in RAM")
+    if settings.kv_cache_k is not None:
+        parts.append(f"KV {settings.kv_cache_k}")
+    if settings.flash_attention is not None:
+        parts.append("flash attn " + ("on" if settings.flash_attention else "off"))
+    return ", ".join(parts) or "defaults"
 
 
 # "localtune monitor": watches the GPU for a few seconds and shows what it used and what that

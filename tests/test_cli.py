@@ -5,6 +5,7 @@
 import itertools
 from pathlib import Path
 
+from rich.console import Console
 from typer.testing import CliRunner
 
 from localtune import cli
@@ -230,3 +231,38 @@ def test_run_refuses_an_unknown_kv_cache_type(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert "Unknown KV cache type" in result.output
     assert load_results() == []
+
+
+def wide_terminal(monkeypatch):
+    # The results table has many columns; a wide terminal keeps each value on one line.
+    monkeypatch.setattr(cli, "console", Console(width=200))
+
+
+def test_results_shows_saved_runs(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    result = runner.invoke(cli.app, ["results"])
+    assert result.exit_code == 0
+    assert "Saved runs (1 of 1)" in result.output
+    assert "7,612" in result.output
+    assert "133.2" in result.output
+    assert "99 GPU layers, KV f16" in result.output
+
+
+def test_results_lists_failed_runs(monkeypatch, tmp_path):
+    def out_of_memory(llama_bench, model, options):
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, out_of_memory)
+    runner.invoke(cli.app, ["run", str(model)])
+    result = runner.invoke(cli.app, ["results"])
+    assert "out of memory" in result.output
+
+
+def test_results_when_nothing_is_saved(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
+    result = runner.invoke(cli.app, ["results"])
+    assert result.exit_code == 0
+    assert "localtune run" in result.output
