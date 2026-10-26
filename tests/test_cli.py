@@ -320,6 +320,7 @@ def test_results_shows_saved_runs(monkeypatch, tmp_path):
     assert "7,612" in result.output
     assert "133.2" in result.output
     assert "GPU layers 99, KV f16" in result.output
+    assert "llama.cpp" in result.output
 
 
 def test_results_shows_all_gpu_layers(monkeypatch, tmp_path):

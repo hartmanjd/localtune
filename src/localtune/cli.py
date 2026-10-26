@@ -370,8 +370,8 @@ def show_run(result: RunResult) -> None:
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
-# runs with different models and settings can be compared side by side. Failed runs are listed
-# too, because knowing which settings don't work is part of tuning.
+# runs with different models, engines and settings can be compared side by side. Failed runs
+# are listed too, because knowing which settings don't work is part of tuning.
 
 
 @app.command()
@@ -391,6 +391,7 @@ def results(
     table = Table(title=f"Saved runs ({len(shown)} of {len(runs)})")
     table.add_column("When", no_wrap=True)
     table.add_column("Model", overflow="fold")
+    table.add_column("Engine")
     for column in ("Quant", "Settings", "Result"):
         table.add_column(column)
     for column in ("Prefill tok/s", "Decode tok/s", "Peak VRAM", "Cost/1M tok"):
@@ -414,6 +415,7 @@ def result_row(run: RunResult) -> list[str]:
     return [
         run.created_at.astimezone().strftime("%m-%d %H:%M"),
         run.settings.model,
+        run.settings.engine,
         run.settings.quant or "",
         settings_summary(run.settings),
         RESULT_LABELS[run.status],
