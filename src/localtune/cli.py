@@ -35,6 +35,7 @@ from localtune.install import (
     find_tool,
     install_llama_cpp,
 )
+from localtune.ollama_models import find_ollama_model
 from localtune.prices import find_price
 from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
 from localtune.runners.base import measure
@@ -188,7 +189,8 @@ def run(
     model: Annotated[
         str | None,
         typer.Argument(
-            help="The model file (.gguf), or with -b api the model's name in the server."
+            help="The model file (.gguf) or a model downloaded with Ollama, like qwen3:14b. "
+            "With -b api, the model's name in the server."
         ),
     ] = None,
     backend: str = typer.Option(
@@ -255,8 +257,12 @@ def run(
         if llama_bench is None:
             console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
             raise typer.Exit(1)
-        if model is None or not Path(model).is_file():
-            console.print(f"Model file not found: {model or 'none given'}")
+        model_file, model_name = find_model_file(model)
+        if model_file is None:
+            console.print(
+                f"Model not found: {model or 'none given'}. Give a model file (.gguf), "
+                "or the name of a model downloaded with Ollama, like qwen3:14b."
+            )
             raise typer.Exit(1)
         if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
             console.print(
@@ -276,10 +282,9 @@ def run(
             ubatch_size=ubatch_size,
             gpu_index=gpu,
         )
-        model_file = Path(model)
-        engine = partial(run_llama_bench, llama_bench, model_file, options)
-        requested = requested_settings(model_file, options)
-        label = f"Benchmarking {model_file.name} with llama.cpp..."
+        engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+        requested = requested_settings(model_file, options, model_name)
+        label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     with console.status(label):
@@ -293,6 +298,19 @@ def run(
         raise typer.Exit(1)
     show_run(result)
     console.print(f"Saved to {path}")
+
+
+# For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which
+# is then benchmarked from Ollama's copy and saved under its Ollama name.
+
+
+def find_model_file(model: str | None) -> tuple[Path | None, str | None]:
+    if model is None:
+        return None, None
+    if Path(model).is_file():
+        return Path(model), None
+    ollama_file = find_ollama_model(model)
+    return (ollama_file, model) if ollama_file else (None, None)
 
 
 # For "-b api": finds the running server and the model in it to benchmark, or says what's

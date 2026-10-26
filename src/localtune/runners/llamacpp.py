@@ -72,8 +72,9 @@ def build_command(llama_bench: str, model: Path, options: BenchOptions) -> list[
 # the decode test ("n_gen"), each with its average speed in tokens per second ("avg_ts") and the
 # settings it used, plus how long each repetition took ("samples_ns"), which together are the
 # time spent on the tokens. Time to first token is worked out from the prefill speed: the time
-# it takes to read the whole prompt before the first word of the answer can appear. The
-# quantization comes from llama-bench's description of the model.
+# it takes to read the whole prompt before the first word of the answer can appear. The model
+# is saved under the name it was asked for by (like qwen3:14b from ollama_models.py), or else
+# its file name, and its quantization comes from llama-bench's description of the model.
 
 
 def quant_name(model_type: str) -> str:
@@ -84,7 +85,7 @@ def quant_name(model_type: str) -> str:
     return f"{quant}_{sizes[variant]}" if variant in sizes else quant
 
 
-def parse_output(stdout: str, model: Path, repetitions: int) -> EngineRun:
+def parse_output(stdout: str, model: Path, repetitions: int, name: str | None = None) -> EngineRun:
     try:
         tests = json.loads(stdout)
         prefill = next(t for t in tests if t["n_prompt"] > 0 and t["n_gen"] == 0)
@@ -96,7 +97,7 @@ def parse_output(stdout: str, model: Path, repetitions: int) -> EngineRun:
     settings = RunSettings(
         engine=ENGINE,
         engine_version=f"b{prefill['build_number']} ({prefill['build_commit']})",
-        model=model.stem,
+        model=name or model.stem,
         model_file=model.name,
         quant=quant_name(prefill["model_type"]),
         context_size=prefill["n_prompt"] + decode["n_gen"],
@@ -135,7 +136,9 @@ def describe_failure(stderr: str) -> BackendError:
     return BackendError(message)
 
 
-def run_llama_bench(llama_bench: str, model: Path, options: BenchOptions) -> EngineRun:
+def run_llama_bench(
+    llama_bench: str, model: Path, options: BenchOptions, name: str | None = None
+) -> EngineRun:
     try:
         result = subprocess.run(
             build_command(llama_bench, model, options), capture_output=True, text=True
@@ -144,17 +147,17 @@ def run_llama_bench(llama_bench: str, model: Path, options: BenchOptions) -> Eng
         raise BackendError(f"couldn't start llama-bench ({error})") from error
     if result.returncode != 0:
         raise describe_failure(result.stderr)
-    return parse_output(result.stdout, model, options.repetitions)
+    return parse_output(result.stdout, model, options.repetitions, name)
 
 
 # The settings that were asked for, saved in place of the ones llama-bench used when it fails
 # before reporting them.
 
 
-def requested_settings(model: Path, options: BenchOptions) -> RunSettings:
+def requested_settings(model: Path, options: BenchOptions, name: str | None = None) -> RunSettings:
     return RunSettings(
         engine=ENGINE,
-        model=model.stem,
+        model=name or model.stem,
         model_file=model.name,
         context_size=options.prompt_tokens + options.gen_tokens,
         gpu_layers=options.gpu_layers,

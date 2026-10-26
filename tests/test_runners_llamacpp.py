@@ -16,6 +16,12 @@ EXAMPLE = (Path(__file__).parent / "data" / "llama_bench.json").read_text()
 MODEL = Path("models/llama-2-7b.Q4_0.gguf")
 
 
+def test_saves_the_name_the_model_was_asked_for_by():
+    run = llamacpp.parse_output(EXAMPLE, Path("blobs/sha256-abc"), repetitions=3, name="qwen3:14b")
+    assert run.settings.model == "qwen3:14b"
+    assert run.settings.model_file == "sha256-abc"
+
+
 @pytest.mark.parametrize(
     "model_type, quant",
     [
