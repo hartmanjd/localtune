@@ -1,0 +1,67 @@
+# Keeps the model tables (src/localtune/data/models.csv and model_files.csv) filled in and up
+# to date. People only decide which models belong in scripts/model_list.csv; this robot looks
+# up every number in them on Hugging Face and Ollama with scripts/build_model_table.py, which
+# GitHub's computers can reach from anywhere.
+name: Model table
+
+# Runs when a PR changes the model list or the script, and saves the finished tables into that
+# PR, so a new model shows up with its numbers before the PR is merged. Also runs every Monday
+# on main to catch new quantizations and re-uploads, and can be started by hand from the
+# Actions tab.
+on:
+  pull_request:
+    paths:
+      - scripts/model_list.csv
+      - scripts/build_model_table.py
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build:
+    # PRs from other people's copies of the repo can't be written to, so those are skipped.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build the tables
+        run: python scripts/build_model_table.py
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      # Only a real change is saved. In a PR it goes straight into the PR; the weekly run
+      # proposes it as its own PR (update-model-table) for a person to look over and merge.
+      - name: Save the tables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add src/localtune/data/models.csv src/localtune/data/model_files.csv
+          if git diff --cached --quiet; then
+            echo "The tables are already up to date."
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git commit -m "Fill in the model tables from Hugging Face and Ollama"
+            git push
+          else
+            git checkout -B update-model-table
+            git commit -m "Update the model tables from Hugging Face and Ollama"
+            git push --force origin update-model-table
+            gh pr view update-model-table --json state -q .state | grep -q OPEN || gh pr create \
+              --head update-model-table \
+              --title "Update the model tables" \
+              --body "New or changed file sizes and model facts from this week's check of Hugging Face and Ollama."
+          fi
