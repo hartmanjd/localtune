@@ -48,6 +48,23 @@ def test_reads_how_much_of_a_mixture_of_experts_model_is_experts(tmp_path):
     assert layout.expert_share == pytest.approx(0.75)
 
 
+def test_reads_how_much_memory_each_token_of_a_conversation_takes(tmp_path):
+    # 8 KV heads with keys and values of 128 numbers each, at 2 bytes, in each of 40 layers.
+    model = tmp_path / "dense.gguf"
+    facts = {"general.architecture": "qwen3", "qwen3.block_count": 40}
+    facts |= {"qwen3.attention.head_count": 40, "qwen3.attention.head_count_kv": 8}
+    facts |= {"qwen3.attention.key_length": 128, "qwen3.attention.value_length": 128}
+    gguf_file(model, facts, {"output.weight": (64, 10)})
+    assert read_layout(model).kv_bytes_per_token == 8 * (128 + 128) * 2 * 40
+
+
+def test_without_head_counts_the_conversation_memory_is_unknown(tmp_path):
+    model = tmp_path / "dense.gguf"
+    facts = {"general.architecture": "llama", "llama.block_count": 32}
+    gguf_file(model, facts, {"output.weight": (64, 10)})
+    assert read_layout(model).kv_bytes_per_token == 0
+
+
 def test_other_files_are_refused(tmp_path):
     not_gguf = tmp_path / "notes.txt"
     not_gguf.write_text("hello")

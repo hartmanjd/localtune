@@ -89,6 +89,14 @@ def test_first_guess_for_a_mixture_of_experts_model_moves_only_experts():
     assert describe_split(guess, MOE) == "experts of 11 of 48 layers in RAM"
 
 
+def test_a_long_conversation_leaves_less_room_for_the_model():
+    # 1 MB per token: a 4,096-token conversation takes 4 GB of the GPU's memory, leaving 10.5
+    # GB for 41 parts of 0.29 GB each: 35 parts, one of them the output layer.
+    layout = DENSE.model_copy(update={"kv_bytes_per_token": 1024**2})
+    assert first_guess(12 * GB, layout, vram_gb=16) is None
+    assert first_guess(12 * GB, layout, vram_gb=16, context=4096) == 34
+
+
 def test_first_guess_never_goes_below_nothing_on_the_gpu():
     assert first_guess(500 * GB, DENSE, vram_gb=8) == 0
     assert first_guess(500 * GB, MOE, vram_gb=8) == 0
