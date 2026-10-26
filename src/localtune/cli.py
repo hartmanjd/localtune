@@ -27,6 +27,7 @@ from localtune import __version__
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gpu_monitor import GpuMonitor
+from localtune.gpus import find_gpu_spec
 from localtune.hardware import detect_hardware
 from localtune.install import (
     DOWNLOAD_MB,
@@ -58,7 +59,7 @@ def main() -> None:
 
 
 # "localtune info": shows what localtune can see about this computer, the same details that
-# will be saved with every benchmark run.
+# will be saved with every benchmark run, plus each GPU's specs from the GPU table (gpus.py).
 
 
 @app.command()
@@ -81,9 +82,19 @@ def info() -> None:
     gpus.add_column("#")
     gpus.add_column("Name")
     gpus.add_column("VRAM")
+    gpus.add_column("Bandwidth")
+    gpus.add_column("Compute")
     gpus.add_column("Driver")
     for gpu in hw.gpus:
-        gpus.add_row(str(gpu.index), gpu.name, f"{gpu.vram_gb} GB", gpu.driver_version)
+        spec = find_gpu_spec(gpu.name, gpu.vram_gb)
+        gpus.add_row(
+            str(gpu.index),
+            gpu.name,
+            f"{gpu.vram_gb} GB",
+            f"{spec.memory_bandwidth_gbs:,.0f} GB/s" if spec else "unknown",
+            f"{spec.fp32_tflops} TFLOPS" if spec else "unknown",
+            gpu.driver_version,
+        )
     console.print(gpus)
 
 

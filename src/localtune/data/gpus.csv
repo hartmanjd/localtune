@@ -1,0 +1,50 @@
+name,vram_gb,architecture,compute_capability,memory_bandwidth_gbs,fp32_tflops,board_power_w,source
+RTX 5090,32,Blackwell,12.0,1792,104.9,575,NVIDIA GeForce compare page
+RTX 5080,16,Blackwell,12.0,960,56.3,360,NVIDIA GeForce compare page
+RTX 5070 Ti,16,Blackwell,12.0,896,43.9,300,NVIDIA GeForce compare page
+RTX 5070,12,Blackwell,12.0,672,30.8,250,NVIDIA GeForce compare page
+RTX 5060 Ti,16,Blackwell,12.0,448,23.7,180,NVIDIA GeForce compare page
+RTX 5060 Ti,8,Blackwell,12.0,448,23.7,180,NVIDIA GeForce compare page
+RTX 5060,8,Blackwell,12.0,448,19.2,145,NVIDIA GeForce compare page
+RTX 4090,24,Ada Lovelace,8.9,1008,82.6,450,NVIDIA Ada architecture whitepaper
+RTX 4080 SUPER,16,Ada Lovelace,8.9,736,52.2,320,NVIDIA RTX 4080 family page (23 Gbps memory)
+RTX 4080,16,Ada Lovelace,8.9,717,48.7,320,NVIDIA Ada architecture whitepaper
+RTX 4070 Ti SUPER,16,Ada Lovelace,8.9,672,44.1,285,NVIDIA RTX 4070 family page; bandwidth matches llmfit
+RTX 4070 Ti,12,Ada Lovelace,8.9,504,40.1,285,NVIDIA RTX 4070 family page; bandwidth matches llmfit
+RTX 4070 SUPER,12,Ada Lovelace,8.9,504,35.6,220,NVIDIA RTX 4070 family page; bandwidth matches llmfit
+RTX 4070,12,Ada Lovelace,8.9,504,29.2,200,NVIDIA RTX 4070 family page; bandwidth matches llmfit
+RTX 4060 Ti,16,Ada Lovelace,8.9,288,22.1,165,NVIDIA RTX 4060 family page; bandwidth matches llmfit
+RTX 4060 Ti,8,Ada Lovelace,8.9,288,22.1,160,NVIDIA RTX 4060 family page; bandwidth matches llmfit
+RTX 4060,8,Ada Lovelace,8.9,272,15.1,115,NVIDIA RTX 4060 family page; bandwidth matches llmfit
+RTX 3090 Ti,24,Ampere,8.6,1008,40.0,450,NVIDIA Ada architecture whitepaper
+RTX 3090,24,Ampere,8.6,936,35.6,350,NVIDIA Ampere GA102 whitepaper
+RTX 3080 Ti,12,Ampere,8.6,912,34.1,350,NVIDIA Ada architecture whitepaper
+RTX 3080,12,Ampere,8.6,912,30.6,350,NVIDIA GeForce compare page; bandwidth from its 384-bit bus
+RTX 3080,10,Ampere,8.6,760,29.8,320,NVIDIA Ampere GA102 whitepaper
+RTX 3070 Ti,8,Ampere,8.6,608,21.8,290,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 3070,8,Ampere,8.6,448,20.3,220,NVIDIA Ampere GA102 whitepaper
+RTX 3060 Ti,8,Ampere,8.6,448,16.2,200,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 3060,12,Ampere,8.6,360,12.8,170,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 3060,8,Ampere,8.6,240,12.8,170,NVIDIA GeForce compare page; bandwidth from its 128-bit bus
+RTX 3050,8,Ampere,8.6,224,9.1,130,NVIDIA GeForce compare page; bandwidth from its 128-bit bus
+RTX 3050,6,Ampere,8.6,168,6.8,70,NVIDIA GeForce compare page; bandwidth from its 96-bit bus
+RTX 2080 Ti,11,Turing,7.5,616,14.2,260,NVIDIA Ada architecture whitepaper
+RTX 2080 SUPER,8,Turing,7.5,496,11.2,250,NVIDIA Ampere GA102 whitepaper
+RTX 2080,8,Turing,7.5,448,10.6,225,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 2070 SUPER,8,Turing,7.5,448,9.1,215,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 2070,8,Turing,7.5,448,7.9,185,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 2060 SUPER,8,Turing,7.5,448,7.2,175,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 2060,12,Turing,7.5,336,7.2,185,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 2060,6,Turing,7.5,336,6.5,160,NVIDIA GeForce compare page; bandwidth matches llmfit
+RTX 6000 Ada Generation,48,Ada Lovelace,8.9,960,91.1,300,NVIDIA RTX 6000 Ada datasheet
+RTX A6000,48,Ampere,8.6,768,38.7,300,NVIDIA RTX A6000 datasheet
+L40S,48,Ada Lovelace,8.9,864,91.6,350,NVIDIA L40S page
+L4,24,Ada Lovelace,8.9,300,30.3,72,NVIDIA L4 page
+A10,24,Ampere,8.6,600,31.2,150,NVIDIA A10 datasheet
+A100-SXM4-80GB,80,Ampere,8.0,2039,19.5,400,NVIDIA A100 page and datasheet
+A100-SXM4-40GB,40,Ampere,8.0,1555,19.5,400,NVIDIA A100 datasheet
+A100 80GB PCIe,80,Ampere,8.0,1935,19.5,300,NVIDIA A100 page
+A100-PCIE-40GB,40,Ampere,8.0,1555,19.5,250,NVIDIA A100 datasheet
+H100 80GB HBM3,80,Hopper,9.0,3350,67.0,700,NVIDIA H100 page
+H100 NVL,94,Hopper,9.0,3900,60.0,400,NVIDIA H100 page
+T4,16,Turing,7.5,320,8.1,70,NVIDIA T4 page

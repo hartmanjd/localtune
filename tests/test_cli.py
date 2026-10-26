@@ -37,12 +37,14 @@ FAKE_PC = HardwareInfo(
 
 
 def test_info_shows_the_hardware(monkeypatch):
+    wide_terminal(monkeypatch)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
     result = runner.invoke(cli.app, ["info"])
     assert result.exit_code == 0
     assert "RTX 4070 Ti SUPER" in result.output
     assert "(WSL)" in result.output
     assert "32.0 GB" in result.output
+    assert "672 GB/s" in result.output
 
 
 def test_info_without_a_gpu(monkeypatch):
