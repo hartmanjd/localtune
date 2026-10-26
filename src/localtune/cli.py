@@ -114,7 +114,7 @@ def doctor(
         console.print("Not ready to benchmark: fix the items marked ✗.")
         raise typer.Exit(1)
     else:
-        console.print("Not ready to benchmark: needs llama.cpp.")
+        console.print("Not ready to benchmark: needs llama.cpp or a running local AI server.")
         raise typer.Exit(1)
 
 
