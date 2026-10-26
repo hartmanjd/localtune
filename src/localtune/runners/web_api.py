@@ -170,10 +170,16 @@ def send(server: Server, model: str, prompt: str, max_tokens: int, timeout_s: fl
     return Reply(**reply)
 
 
+# Thinking models (like Qwen3) write their thinking before the answer, and servers send it
+# under its own name. It's written tokens all the same, so it counts as the answer's pieces.
+
+WRITTEN = ("content", "reasoning", "reasoning_content")
+
+
 def read_chunk(chunk: dict, reply: dict) -> None:
     for choice in chunk.get("choices") or []:
         delta = choice.get("delta") or {}
-        if delta.get("content") or delta.get("reasoning_content"):
+        if any(delta.get(key) for key in WRITTEN):
             reply.setdefault("first_token_s", time.monotonic())
             reply["pieces"] += 1
     usage = chunk.get("usage") or {}
