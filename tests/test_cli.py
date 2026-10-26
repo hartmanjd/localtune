@@ -261,6 +261,21 @@ def test_results_lists_failed_runs(monkeypatch, tmp_path):
     assert "out of memory" in result.output
 
 
+def test_results_shows_only_the_last_runs(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    for _ in range(3):
+        runner.invoke(cli.app, ["run", str(model)])
+    result = runner.invoke(cli.app, ["results", "--last", "2"])
+    assert "Saved runs (2 of 3)" in result.output
+
+
+def test_results_filters_by_model(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    runner.invoke(cli.app, ["run", str(model)])
+    result = runner.invoke(cli.app, ["results", "--model", "qwen"])
+    assert "No saved runs yet" in result.output
+
+
 def test_results_when_nothing_is_saved(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
     result = runner.invoke(cli.app, ["results"])

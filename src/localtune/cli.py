@@ -281,13 +281,18 @@ def show_run(result: RunResult) -> None:
 
 
 @app.command()
-def results() -> None:
+def results(
+    last: int = typer.Option(20, help="How many of the most recent runs to show."),
+    model: str | None = typer.Option(None, help="Only show runs whose model name contains this."),
+) -> None:
     """Show your saved benchmark runs."""
     runs = load_results()
+    if model:
+        runs = [r for r in runs if model.lower() in r.settings.model.lower()]
     if not runs:
         console.print("No saved runs yet. Benchmark a model with 'localtune run'.")
         return
-    shown = runs
+    shown = runs[-last:]
 
     table = Table(
         title=f"Saved runs ({len(shown)} of {len(runs)})",
