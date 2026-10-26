@@ -377,3 +377,86 @@ def test_results_when_nothing_is_saved(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["results"])
     assert result.exit_code == 0
     assert "localtune run" in result.output
+
+
+def tuned_run(llama_bench, model, options, name=None):
+    # A pretend llama-bench where the settings change the speed: q8_0 and bigger micro-batches
+    # are faster, and a q4_0 cache doesn't fit in memory.
+    if options.kv_cache == "q4_0":
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+    run = example_run(llama_bench, model, options, name)
+    run.settings.flash_attention = options.flash_attention
+    run.settings.kv_cache_k = run.settings.kv_cache_v = options.kv_cache
+    run.settings.ubatch_size = options.ubatch_size
+    run.speed.decode_tok_s = (
+        100 + options.ubatch_size / 256 + (10 if options.kv_cache == "q8_0" else 0)
+    )
+    return run
+
+
+def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    result = runner.invoke(cli.app, ["tune", str(model), "--price", "0.20"])
+    assert result.exit_code == 0
+    assert "Trying 16 combinations" in result.output
+    assert "out of GPU memory" in result.output
+    assert "Fastest on this computer: flash attn on, KV q8_0, micro-batch 2048." in result.output
+    assert f"localtune run {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048" in result.output
+    saved = load_results()
+    assert len(saved) == 16
+    assert len({run.tune_id for run in saved}) == 1 and saved[0].tune_id
+
+
+def test_tune_explains_when_nothing_fits(monkeypatch, tmp_path):
+    def out_of_memory(llama_bench, model, options, name=None):
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+
+    model = fake_run(monkeypatch, tmp_path, out_of_memory)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert result.exit_code == 1
+    assert "None of the settings worked" in result.output
+    assert "--gpu-layers" in result.output
+
+
+def test_tune_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
+    calls = itertools.count()
+
+    def stopped_on_the_third(llama_bench, model, options, name=None):
+        if next(calls) == 2:
+            raise KeyboardInterrupt
+        return tuned_run(llama_bench, model, options, name)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, stopped_on_the_third)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert "Stopped" in result.output
+    assert "Fastest on this computer: flash attn off, KV f16, micro-batch 512." in result.output
+    assert len(load_results()) == 2
+
+
+def test_tune_keeps_settings_that_arent_tuned(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return tuned_run(llama_bench, model, options, name)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    result = runner.invoke(cli.app, ["tune", str(model), "--gpu-layers", "30"])
+    assert f"localtune run {model} --gpu-layers 30 --flash-attn" in result.output
+    assert {options.gpu_layers for options in asked} == {30}
+
+
+def test_tune_without_llama_cpp(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "find_tool", lambda name: None)
+    result = runner.invoke(cli.app, ["tune", "qwen3:14b"])
+    assert result.exit_code == 1
+    assert "localtune doctor" in result.output
+
+
+def test_tune_says_how_long_is_left():
+    assert cli.time_left(0, 0, 16) == ""
+    assert cli.time_left(60, 2, 16) == " (about 7 min left)"
+    assert cli.time_left(10, 15, 16) == " (under a minute left)"

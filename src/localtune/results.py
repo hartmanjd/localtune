@@ -105,7 +105,9 @@ def energy_and_cost(
 # One saved run. Besides the groups above it records when and by which localtune version it
 # was measured, which machine ran it (rig_id, a random ID with nothing personal in it, so many
 # runs from one computer can be told apart from runs on others), what kind of run it was
-# (a quick screening try, a full measurement or a final confirmation), and whether it worked.
+# (a quick screening try, a full measurement or a final confirmation), whether it worked, and,
+# for runs made by "localtune tune", which tuning session it belonged to (tune_id), so the runs
+# that only differ in their settings can be compared with each other.
 
 
 class RunResult(BaseModel):
@@ -115,6 +117,7 @@ class RunResult(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     localtune_version: str = __version__
     kind: Literal["screening", "full", "confirm"] = "full"
+    tune_id: str | None = None
     repetitions: int = 1
     status: Literal["ok", "out_of_memory", "crashed"] = "ok"
     error: str | None = None

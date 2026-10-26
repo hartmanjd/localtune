@@ -1,16 +1,18 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune run", "localtune results" and "localtune monitor") starts here. This file only handles
-# the conversation with the person: it asks other modules for the actual work (hardware.py for
-# the computer's details, gpu_monitor.py, cost.py and prices.py for GPU readings and their cost,
-# doctor.py for whether the computer is ready, runners/ for benchmarks) and shows the answers.
+# "localtune run", "localtune tune", "localtune results" and "localtune monitor") starts here.
+# This file only handles the conversation with the person: it asks other modules for the
+# actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
+# for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
+# benchmarks, tune.py for the settings tuning tries) and shows the answers.
 
 import sys
 import time
 from functools import partial
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 import typer
 from rich.console import Console
@@ -48,6 +50,7 @@ from localtune.runners.llamacpp import (
 )
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
+from localtune.tune import combinations, describe, fastest, run_flags
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -264,19 +267,7 @@ def run(
         requested = web_api_settings(server, model_name, options)
         label = f"Benchmarking {model_name} in {server.name} at {server.url}..."
     else:
-        llama_bench = find_tool("llama-bench")
-        if llama_bench is None:
-            console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
-            raise typer.Exit(1)
-        model_file, model_name = find_model_file(model)
-        if model_file is None:
-            explain_missing_model(model)
-            raise typer.Exit(1)
-        if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
-            console.print(
-                f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_TYPES)}"
-            )
-            raise typer.Exit(1)
+        llama_bench, model_file, model_name = prepare_llama_cpp(model, kv_cache)
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -309,7 +300,23 @@ def run(
 
 
 # For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which
-# is then benchmarked from Ollama's copy and saved under its Ollama name.
+# is then benchmarked from Ollama's copy and saved under its Ollama name. Before anything runs,
+# llama.cpp, the model and the settings are checked, so a mistake is explained straight away.
+
+
+def prepare_llama_cpp(model: str | None, kv_cache: str | None = None):
+    llama_bench = find_tool("llama-bench")
+    if llama_bench is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    model_file, model_name = find_model_file(model)
+    if model_file is None:
+        explain_missing_model(model)
+        raise typer.Exit(1)
+    if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
+        console.print(f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_TYPES)}")
+        raise typer.Exit(1)
+    return llama_bench, model_file, model_name
 
 
 def find_model_file(model: str | None) -> tuple[Path | None, str | None]:
@@ -388,6 +395,142 @@ def show_run(result: RunResult) -> None:
     else:
         table.add_row("Energy and cost", "unknown (no GPU power readings)")
     console.print(table)
+
+
+# "localtune tune": benchmarks one model with every combination of settings in tune.py, one
+# run after another, and shows which was fastest on this computer, with the options that use
+# it in "localtune run". Each run is saved like a "localtune run" (with the same tune_id), so
+# the whole session becomes data. It says how long is left, estimated from the runs so far,
+# and Ctrl+C stops it with the finished runs kept. Settings that aren't tuned, like how many
+# layers go on the GPU, can be fixed for every run, which is how a model too big for the GPU
+# gets tuned.
+
+
+@app.command()
+def tune(
+    model: Annotated[
+        str | None,
+        typer.Argument(help="The model file (.gguf) or a model downloaded with Ollama."),
+    ] = None,
+    prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
+    gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
+    repetitions: int = typer.Option(3, help="How many times each test is repeated."),
+    gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
+    cpu_moe: int | None = typer.Option(
+        None, help="Mixture-of-experts models: how many layers keep their experts in RAM."
+    ),
+    threads: int | None = typer.Option(None, help="CPU threads to use."),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+    zip_code: str | None = typer.Option(
+        None, "--zip", help="Your US zip code, for your local electricity price."
+    ),
+    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
+    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
+    price: float | None = typer.Option(
+        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
+    ),
+) -> None:
+    """Try llama.cpp's main settings on a model and find the fastest on this computer."""
+    llama_bench, model_file, model_name = prepare_llama_cpp(model)
+    name = model_name or model_file.name
+    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
+    combos, runs, tune_id = combinations(), [], uuid4().hex
+    console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
+
+    started = time.monotonic()
+    try:
+        for number, settings in enumerate(combos, 1):
+            options = BenchOptions(
+                prompt_tokens=prompt_tokens,
+                gen_tokens=gen_tokens,
+                repetitions=repetitions,
+                gpu_layers=gpu_layers,
+                cpu_moe_layers=cpu_moe,
+                threads=threads,
+                gpu_index=gpu,
+                **settings,
+            )
+            engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+            requested = requested_settings(model_file, options, model_name)
+            left = time_left(time.monotonic() - started, number - 1, len(combos))
+            with console.status(f"Run {number} of {len(combos)}: {describe(settings)}{left}"):
+                result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+            result.tune_id = tune_id
+            save_result(result)
+            runs.append(result)
+            console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
+    except KeyboardInterrupt:
+        console.print("Stopped. The runs that finished are saved.")
+
+    fixed = {"--gpu-layers": gpu_layers, "--cpu-moe": cpu_moe, "--threads": threads}
+    fixed_flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
+    if not show_tune(runs, f"{model}{fixed_flags}"):
+        raise typer.Exit(1)
+    console.print(f"All runs saved to {results_file()}")
+
+
+def time_left(elapsed_s: float, done: int, total: int) -> str:
+    if done == 0:
+        return ""
+    minutes = round(elapsed_s / done * (total - done) / 60)
+    return f" (about {minutes} min left)" if minutes >= 1 else " (under a minute left)"
+
+
+def outcome(result: RunResult) -> str:
+    if result.status == "out_of_memory":
+        return "[red]out of GPU memory[/red]"
+    if result.status != "ok" or not result.speed:
+        return f"[red]failed[/red] ({result.error})"
+    speed = result.speed
+    return f"{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
+
+
+def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
+    best = fastest(runs)
+    if best is None:
+        if runs:
+            console.print("None of the settings worked.")
+            if any(run.status == "out_of_memory" for run in runs):
+                console.print(
+                    "The model didn't fit in GPU memory. Try again with fewer layers on the GPU, "
+                    "like --gpu-layers 20."
+                )
+        return False
+
+    worked = sorted(
+        (run for run in runs if run.status == "ok" and run.speed and run.speed.decode_tok_s),
+        key=lambda run: run.speed.decode_tok_s,
+        reverse=True,
+    )
+    table = Table(title=f"{best.settings.model}, fastest first")
+    for column in ("Flash attn", "KV cache", "Micro-batch"):
+        table.add_column(column)
+    for column in ("Decode tok/s", "Prefill tok/s", "Peak VRAM"):
+        table.add_column(column, justify="right")
+    for run in worked:
+        s, gpu = run.settings, run.gpu
+        table.add_row(
+            "on" if s.flash_attention else "off",
+            s.kv_cache_k or "",
+            str(s.ubatch_size or ""),
+            f"{run.speed.decode_tok_s:,.1f}",
+            f"{run.speed.prefill_tok_s:,.0f}",
+            f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
+        )
+    console.print(table)
+
+    s = best.settings
+    winner = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
+    winner["ubatch_size"] = s.ubatch_size
+    console.print(f"Fastest on this computer: {describe(winner)}.")
+    console.print("To use these settings:")
+    command = f"  localtune run {model_and_fixed_flags} {run_flags(best)}"
+    console.print(command, markup=False, highlight=False, soft_wrap=True)
+    if s.kv_cache_k in ("q8_0", "q4_0"):
+        console.print(
+            f"A {s.kv_cache_k} KV cache saves memory but can make answers slightly worse than f16."
+        )
+    return True
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
