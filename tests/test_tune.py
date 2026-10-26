@@ -1,10 +1,13 @@
 # Tests for the settings "localtune tune" tries and how it picks the fastest.
 
+import pytest
+
 from localtune.cost import ElectricityPrice
 from localtune.gguf import ModelLayout
 from localtune.hardware import HardwareInfo
 from localtune.results import EnergyCost, RunResult, RunSettings, Speed
 from localtune.tune import (
+    answer_seconds,
     combinations,
     describe,
     describe_split,
@@ -27,14 +30,16 @@ def test_quantized_kv_caches_are_only_tried_with_flash_attention():
             assert combo["flash_attention"]
 
 
-def a_run(decode, status="ok", **settings):
+def a_run(decode, status="ok", prefill=5000.0, **settings):
     price = ElectricityPrice(per_kwh=0.2, currency="USD", kind="yours", source="you")
     return RunResult(
         rig_id="rig",
         status=status,
         settings=RunSettings(engine="llama.cpp", model="qwen3:14b", **settings),
         hardware=PC,
-        speed=Speed(prompt_tokens=512, generated_tokens=128, decode_tok_s=decode),
+        speed=Speed(
+            prompt_tokens=512, generated_tokens=128, prefill_tok_s=prefill, decode_tok_s=decode
+        ),
         energy=EnergyCost(
             kwh=None,
             kwh_per_million_tokens=None,
@@ -45,11 +50,19 @@ def a_run(decode, status="ok", **settings):
     )
 
 
-def test_the_fastest_writer_wins_and_failed_runs_dont_count():
+def test_the_quickest_whole_answer_wins_and_failed_runs_dont_count():
     slow, quick = a_run(50.0), a_run(60.0)
     crashed = a_run(99.0, status="out_of_memory")
     assert fastest([slow, crashed, quick]) is quick
     assert fastest([crashed]) is None
+
+
+def test_slow_reading_can_lose_to_slower_writing():
+    # Reading 512 tokens at 50 tok/s takes 10 s, more than writing 128 tokens is ever saved.
+    crawling_reader = a_run(130.0, prefill=50.0)
+    steady = a_run(100.0, prefill=1500.0)
+    assert fastest([crawling_reader, steady]) is steady
+    assert answer_seconds(steady) == pytest.approx(512 / 1500 + 128 / 100)
 
 
 def test_the_winner_can_be_run_again():
@@ -102,7 +115,7 @@ def test_first_guess_never_goes_below_nothing_on_the_gpu():
     assert first_guess(500 * GB, MOE, vram_gb=8) == 0
 
 
-def speeds(curve):
+def times(curve):
     tried = []
 
     def try_split(on_gpu):
@@ -113,25 +126,25 @@ def speeds(curve):
 
 
 def test_best_split_climbs_while_more_on_the_gpu_is_faster():
-    # Faster with every layer on the GPU up to 23, then out of memory.
-    try_split, tried = speeds(lambda n: None if n > 23 else 10 + n)
+    # Quicker answers with every layer on the GPU up to 23, then out of memory.
+    try_split, tried = times(lambda n: None if n > 23 else 50 - n)
     assert find_best_split(try_split, 20, layers=40) == 23
     assert tried == [20, 21, 22, 23, 24]
 
 
 def test_best_split_steps_down_when_the_guess_does_not_fit():
-    try_split, tried = speeds(lambda n: None if n > 15 else 10 + n)
+    try_split, tried = times(lambda n: None if n > 15 else 50 - n)
     assert find_best_split(try_split, 20, layers=40) == 15
     assert tried[:4] == [20, 18, 16, 14]
 
 
 def test_best_split_backs_off_when_the_gpu_slows_down():
     # On Windows a too-full GPU borrows RAM by itself and gets slower instead of failing.
-    try_split, _ = speeds(lambda n: 30 - abs(n - 17))
+    try_split, _ = times(lambda n: 10 + abs(n - 17))
     assert find_best_split(try_split, 20, layers=40) == 17
 
 
 def test_no_split_when_nothing_fits():
-    try_split, tried = speeds(lambda n: None)
+    try_split, tried = times(lambda n: None)
     assert find_best_split(try_split, 4, layers=40) is None
     assert tried == [4, 2, 0]
