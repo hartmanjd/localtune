@@ -88,7 +88,10 @@ def ranking() -> list[dict]:
             }
         )
     if not models:
-        sys.exit(f"Couldn't read Ollama's model list. Start of the page:\n{html[:3000]}")
+        first = max(html.find('href="/library/'), 0)
+        sys.exit(
+            f"Couldn't read Ollama's model list. Page near the first model:\n{html[first - 500 : first + 2500]}"
+        )
     return models
 
 
