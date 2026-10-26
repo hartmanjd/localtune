@@ -28,6 +28,7 @@ from rich.table import Table
 from localtune import __version__
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
+from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import detect_hardware
@@ -50,7 +51,16 @@ from localtune.runners.llamacpp import (
 )
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
-from localtune.tune import combinations, describe, fastest, run_flags
+from localtune.tune import (
+    combinations,
+    describe,
+    describe_split,
+    fastest,
+    find_best_split,
+    first_guess,
+    run_flags,
+    split_settings,
+)
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -434,39 +444,92 @@ def tune(
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
     name = model_name or model_file.name
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    combos, runs, tune_id = combinations(), [], uuid4().hex
-    console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
+    tune_id, started = uuid4().hex, time.monotonic()
+    placement = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
 
-    started = time.monotonic()
+    def bench(settings: dict, label: str) -> RunResult:
+        options = BenchOptions(
+            prompt_tokens=prompt_tokens,
+            gen_tokens=gen_tokens,
+            repetitions=repetitions,
+            threads=threads,
+            gpu_index=gpu,
+            **(placement | settings),
+        )
+        engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+        requested = requested_settings(model_file, options, model_name)
+        with console.status(label):
+            result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+        result.tune_id = tune_id
+        save_result(result)
+        return result
+
+    combos, runs = combinations(), []
     try:
+        if gpu_layers is None and cpu_moe is None:
+            placement = find_split(model_file, gpu, bench) or placement
+        console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
+        started = time.monotonic()
         for number, settings in enumerate(combos, 1):
-            options = BenchOptions(
-                prompt_tokens=prompt_tokens,
-                gen_tokens=gen_tokens,
-                repetitions=repetitions,
-                gpu_layers=gpu_layers,
-                cpu_moe_layers=cpu_moe,
-                threads=threads,
-                gpu_index=gpu,
-                **settings,
-            )
-            engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
-            requested = requested_settings(model_file, options, model_name)
             left = time_left(time.monotonic() - started, number - 1, len(combos))
-            with console.status(f"Run {number} of {len(combos)}: {describe(settings)}{left}"):
-                result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
-            result.tune_id = tune_id
-            save_result(result)
+            result = bench(settings, f"Run {number} of {len(combos)}: {describe(settings)}{left}")
             runs.append(result)
             console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
 
-    fixed = {"--gpu-layers": gpu_layers, "--cpu-moe": cpu_moe, "--threads": threads}
+    fixed = {
+        "--gpu-layers": placement["gpu_layers"],
+        "--cpu-moe": placement.get("cpu_moe_layers"),
+        "--threads": threads,
+    }
     fixed_flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
     if not show_tune(runs, f"{model}{fixed_flags}"):
         raise typer.Exit(1)
     console.print(f"All runs saved to {results_file()}")
+
+
+# A model bigger than the GPU's memory is first split between the GPU and RAM (tune.py says
+# how), at llama.cpp's default settings, so the settings tried after it are tried on the
+# fastest split. Models that fit, files localtune can't read and computers without a GPU skip
+# this step.
+
+
+def find_split(model_file: Path, gpu: int, bench) -> dict | None:
+    gpus = detect_hardware().gpus
+    if gpu >= len(gpus):
+        return None
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError):
+        return None
+    size = model_file.stat().st_size
+    guess = first_guess(size, layout, gpus[gpu].vram_gb)
+    if guess is None:
+        return None
+
+    console.print(
+        f"The model ({size / 1024**3:.1f} GB) is bigger than the GPU's memory "
+        f"({gpus[gpu].vram_gb:.0f} GB), so part of it has to stay in RAM. "
+        "First finding how much fits on the GPU."
+    )
+
+    def try_split(on_gpu: int) -> float | None:
+        label = describe_split(on_gpu, layout)
+        result = bench(split_settings(on_gpu, layout), f"Trying {label}")
+        console.print(f"  Split: {label}: {outcome(result)}")
+        worked = result.status == "ok" and result.speed and result.speed.decode_tok_s
+        return result.speed.decode_tok_s if worked else None
+
+    best = find_best_split(try_split, guess, layout.layers)
+    if best is None:
+        console.print(
+            "[red]No split fit in GPU memory.[/red] Try a smaller version of the model, "
+            "like one with fewer parameters or a smaller quantization."
+        )
+        raise typer.Exit(1)
+    console.print(f"Fastest split: {describe_split(best, layout)}.")
+    return {"cpu_moe_layers": None} | split_settings(best, layout)
 
 
 def time_left(elapsed_s: float, done: int, total: int) -> str:
