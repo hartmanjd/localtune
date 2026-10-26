@@ -82,8 +82,9 @@ def parse_gpu_csv(text: str) -> list[GpuInfo]:
     return gpus
 
 
-# CPU, RAM and WSL details come from files Linux keeps under /proc. Each helper takes that
-# file's text, so the tests can feed in examples from machines they don't run on.
+# On Linux (and WSL), CPU, RAM and WSL details come from files Linux keeps under /proc. Each
+# helper takes that file's text, so the tests can feed in examples from machines they don't
+# run on.
 
 
 def is_wsl(proc_version: str) -> bool:
@@ -112,16 +113,59 @@ def read_text(path: str) -> str:
         return ""
 
 
+# Windows has no /proc. It reports RAM through its own memory status call, and keeps the CPU's
+# full name in the registry. Both only exist on Windows, so they are only looked up there.
+
+
+def windows_ram_gb() -> float | None:
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("length", ctypes.c_ulong),
+            ("memory_load", ctypes.c_ulong),
+            ("total_physical", ctypes.c_ulonglong),
+            ("available_physical", ctypes.c_ulonglong),
+            ("total_page_file", ctypes.c_ulonglong),
+            ("available_page_file", ctypes.c_ulonglong),
+            ("total_virtual", ctypes.c_ulonglong),
+            ("available_virtual", ctypes.c_ulonglong),
+            ("available_extended_virtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return round(status.total_physical / 1024**3, 1)
+
+
+def windows_cpu_name() -> str | None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+        ) as key:
+            return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip() or None
+    except OSError:
+        return None
+
+
 # Puts all the pieces together into one HardwareInfo.
 
 
 def detect_hardware() -> HardwareInfo:
     nvidia_smi = find_nvidia_smi()
+    if platform.system() == "Windows":
+        cpu_name, ram_gb = windows_cpu_name(), windows_ram_gb()
+    else:
+        cpu_name = parse_cpu_name(read_text("/proc/cpuinfo"))
+        ram_gb = parse_ram_gb(read_text("/proc/meminfo"))
     return HardwareInfo(
         os=f"{platform.system()} {platform.release()}",
         is_wsl=is_wsl(read_text("/proc/version")),
-        cpu_name=parse_cpu_name(read_text("/proc/cpuinfo")) or platform.processor() or None,
+        cpu_name=cpu_name or platform.processor() or None,
         cpu_threads=os.cpu_count(),
-        ram_gb=parse_ram_gb(read_text("/proc/meminfo")),
+        ram_gb=ram_gb,
         gpus=query_nvidia_smi(nvidia_smi) if nvidia_smi else [],
     )

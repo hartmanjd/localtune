@@ -2,7 +2,10 @@
 # tests feed in sample text copied from real machines instead of reading the real hardware.
 # They check two promises: the details are read correctly, and missing hardware never crashes.
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from localtune import hardware
 
@@ -73,3 +76,17 @@ def test_detect_hardware_without_a_gpu(monkeypatch):
     info = hardware.detect_hardware()
     assert info.gpus == []
     assert info.os
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads Windows' own RAM and CPU reports")
+def test_detect_hardware_on_windows():
+    info = hardware.detect_hardware()
+    assert info.ram_gb and info.ram_gb > 0
+    assert info.cpu_name
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads Linux's /proc files")
+def test_detect_hardware_on_linux():
+    info = hardware.detect_hardware()
+    assert info.ram_gb and info.ram_gb > 0
+    assert info.cpu_name

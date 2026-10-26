@@ -8,13 +8,16 @@ on:
     branches: [main]
   pull_request:
 
-# One run per Python version: the oldest and newest that localtune supports
-# (requires-python in pyproject.toml), so it keeps working for users on either end.
+# One run per system and Python version: Linux and Windows, since localtune runs natively on
+# both, and the oldest and newest Python localtune supports (requires-python in
+# pyproject.toml), so it keeps working for users on either end.
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.13"]
 
     # The same steps a person would do: get the code, install it with the exact tool versions
