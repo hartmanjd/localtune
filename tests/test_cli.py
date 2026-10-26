@@ -194,8 +194,8 @@ def fake_run(monkeypatch, tmp_path, outcome):
     return model
 
 
-def example_run(llama_bench, model, options):
-    return parse_output(EXAMPLE_RUN, model, options.repetitions)
+def example_run(llama_bench, model, options, name=None):
+    return parse_output(EXAMPLE_RUN, model, options.repetitions, name)
 
 
 def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
@@ -209,7 +209,7 @@ def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
 
 
 def test_run_saves_a_failed_run(monkeypatch, tmp_path):
-    def out_of_memory(llama_bench, model, options):
+    def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
 
     model = fake_run(monkeypatch, tmp_path, out_of_memory)
@@ -217,6 +217,24 @@ def test_run_saves_a_failed_run(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert "ran out of GPU memory" in result.output
     assert load_results()[0].status == "out_of_memory"
+
+
+def test_run_benchmarks_an_ollama_model_by_name(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
+    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    assert result.exit_code == 0
+    saved = load_results()[0].settings
+    assert saved.model == "qwen3:14b"
+    assert saved.model_file == "sha256-abc"
+
+
+def test_run_with_an_unknown_model(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: None)
+    result = runner.invoke(cli.app, ["run", "nothing:here"])
+    assert result.exit_code == 1
+    assert "Model not found: nothing:here" in result.output
 
 
 def test_run_without_llama_cpp(monkeypatch, tmp_path):
@@ -306,7 +324,7 @@ def test_results_shows_saved_runs(monkeypatch, tmp_path):
 
 def test_results_shows_all_gpu_layers(monkeypatch, tmp_path):
     # llama.cpp reports -1 GPU layers when every layer is on the GPU.
-    def all_layers(llama_bench, model, options):
+    def all_layers(llama_bench, model, options, name=None):
         output = EXAMPLE_RUN.replace('"n_gpu_layers": 99', '"n_gpu_layers": -1')
         return parse_output(output, model, options.repetitions)
 
@@ -318,7 +336,7 @@ def test_results_shows_all_gpu_layers(monkeypatch, tmp_path):
 
 
 def test_results_lists_failed_runs(monkeypatch, tmp_path):
-    def out_of_memory(llama_bench, model, options):
+    def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
 
     wide_terminal(monkeypatch)
