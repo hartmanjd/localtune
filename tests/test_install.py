@@ -5,6 +5,7 @@
 import hashlib
 import io
 import tarfile
+import zipfile
 
 import pytest
 
@@ -46,6 +47,14 @@ def make_archive(path, files, links=()):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def make_zip(path, files):
+    # Like the Windows downloads: the files sit directly in the archive, with no top folder.
+    with zipfile.ZipFile(path, "w") as zip_file:
+        for name, data in files.items():
+            zip_file.writestr(name, data)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @pytest.fixture
 def release(tmp_path, monkeypatch):
     # A pretend release with the two downloads one build needs.
@@ -68,10 +77,23 @@ def test_reads_the_drivers_cuda_version():
 
 
 def test_picks_a_build_the_driver_supports():
-    assert install.pick_build((13, 0)) == "cuda-13.4"
-    assert install.pick_build((12, 9)) == "cuda-12.8"
+    assert install.pick_build((13, 0)) == "linux-cuda-13.4"
+    assert install.pick_build((12, 9)) == "linux-cuda-12.8"
     assert install.pick_build((12, 4)) is None
     assert install.pick_build(None) is None
+
+
+def test_picks_a_windows_build_the_driver_supports():
+    assert install.pick_build((13, 4), "windows") == "windows-cuda-13.4"
+    assert install.pick_build((12, 8), "windows") == "windows-cuda-12.4"
+    assert install.pick_build((12, 4), "windows") == "windows-cuda-12.4"
+    assert install.pick_build((12, 2), "windows") is None
+
+
+def test_unsupported_computers_are_told_why(monkeypatch):
+    monkeypatch.setattr(install.platform, "system", lambda: "Darwin")
+    with pytest.raises(InstallError, match="only works on Windows, Linux and WSL"):
+        install.choose_build()
 
 
 def test_every_build_has_fingerprints_and_a_size():
@@ -91,11 +113,26 @@ def test_install_puts_everything_in_one_folder(release):
     assert set(seen) == {"llama.tar.gz", "cudart.tar.gz"}
 
 
-def test_installed_tools_are_found():
+def test_install_unpacks_windows_downloads(tmp_path, monkeypatch):
+    folder = tmp_path / "release"
+    folder.mkdir()
+    llama = make_zip(folder / "llama.zip", {"llama-bench.exe": b"bench", "llama.dll": b"lib"})
+    cudart = make_zip(folder / "cudart.zip", {"cudart64_13.dll": b"cuda"})
+    monkeypatch.setitem(install.DOWNLOADS, "test", {"llama.zip": llama, "cudart.zip": cudart})
+    folder = install.install_llama_cpp("test", base_url=folder.as_uri())
+    assert (folder / "llama-bench.exe").read_bytes() == b"bench"
+    assert (folder / "cudart64_13.dll").exists()
+
+
+@pytest.mark.parametrize(
+    "system, program", [("Linux", "llama-bench"), ("Windows", "llama-bench.exe")]
+)
+def test_installed_tools_are_found(monkeypatch, system, program):
+    monkeypatch.setattr(install.platform, "system", lambda: system)
     assert install.find_tool("llama-bench") is None
     install.install_dir().mkdir(parents=True)
-    (install.install_dir() / "llama-bench").write_text("")
-    assert install.find_tool("llama-bench") == str(install.install_dir() / "llama-bench")
+    (install.install_dir() / program).write_text("")
+    assert install.find_tool("llama-bench") == str(install.install_dir() / program)
 
 
 def test_a_damaged_download_is_refused(release, monkeypatch):
@@ -114,5 +151,13 @@ def test_unsafe_archives_are_refused(tmp_path, name, link):
         make_archive(archive, {}, links=[(name, link)])
     else:
         make_archive(archive, {name: b"x"})
+    with pytest.raises(InstallError, match="unsafe"):
+        install.unpack(archive, tmp_path / "out")
+
+
+@pytest.mark.parametrize("name", ["../escape.dll", "/top.dll", "C:/Windows/evil.dll", "..\\up.dll"])
+def test_unsafe_zip_archives_are_refused(tmp_path, name):
+    archive = tmp_path / "bad.zip"
+    make_zip(archive, {name: b"x"})
     with pytest.raises(InstallError, match="unsafe"):
         install.unpack(archive, tmp_path / "out")

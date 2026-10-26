@@ -147,7 +147,7 @@ def missing_llama_cpp(monkeypatch, installed):
         return "/home/you/.localtune/llama.cpp"
 
     monkeypatch.setattr(cli, "run_checks", checks)
-    monkeypatch.setattr(cli, "choose_build", lambda: "cuda-13.4")
+    monkeypatch.setattr(cli, "choose_build", lambda: "linux-cuda-13.4")
     monkeypatch.setattr(cli, "install_llama_cpp", fake_install)
 
 
@@ -155,7 +155,7 @@ def test_doctor_installs_llama_cpp_when_asked(monkeypatch):
     installed = []
     missing_llama_cpp(monkeypatch, installed)
     result = runner.invoke(cli.app, ["doctor", "--install"])
-    assert installed == ["cuda-13.4"]
+    assert installed == ["linux-cuda-13.4"]
     assert "Installed llama.cpp" in result.output
     assert result.exit_code == 0
 
