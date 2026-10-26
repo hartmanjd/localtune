@@ -1,4 +1,4 @@
-"""Build localtune's model tables from Hugging Face and Ollama.
+"""Build localtune's model tables from Ollama's most popular models.
 
 Run from the project folder:
     python scripts/build_model_table.py
@@ -6,162 +6,281 @@ Run from the project folder:
 
 # localtune ships two model tables (src/localtune/data/) so it can tell, without downloading
 # anything, how big a model is and how it is built: models.csv has one row per model, and
-# model_files.csv one row per downloadable file of it (each quantization, from Hugging Face,
-# plus the file Ollama gives for its name). The prediction model needs both: a model's file
-# size sets what fits in a GPU's memory and how fast it can write, and its layers and
-# attention heads set how much memory the conversation (KV cache) takes on top.
+# model_files.csv one row per downloadable file of it (each quantization Ollama offers). The
+# prediction model needs both: a model's file size sets what fits in a GPU's memory and how
+# fast it can write, and its layers and attention heads set how much memory the conversation
+# (KV cache) takes on top.
 #
-# Every number is read from the source, not estimated. Which models are in the table is
-# decided by hand in scripts/model_list.csv; this script fills in the rest. A GitHub Action
-# (.github/workflows/model-table.yml) runs it whenever that list changes and once a week, so
-# new quantizations and re-uploads show up without anyone typing numbers.
+# Nothing is picked or typed by hand. Which models are in the table is Ollama's own ranking:
+# the top models on ollama.com/library sorted by downloads ("pulls"), with each one's rank and
+# pull count kept as the reason it is there. Every other number comes from Ollama's files
+# themselves. A GitHub Action (.github/workflows/model-table.yml) runs this every week, so
+# the table follows what people actually download.
 
 import csv
 import json
-import os
 import re
+import struct
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL_LIST = ROOT / "scripts" / "model_list.csv"
 OUT_DIR = ROOT / "src" / "localtune" / "data"
 
-HF = "https://huggingface.co"
-OLLAMA_REGISTRY = "https://registry.ollama.ai/v2"
+LIBRARY = "https://ollama.com/library"
+REGISTRY = "https://registry.ollama.ai/v2/library"
+MODEL_LAYER = "application/vnd.ollama.image.model"
+TOP = 100
 
-# Who made the Hugging Face GGUF copies we list file sizes from, in order of preference.
-# bartowski converts most popular models within days, always with the same wide set of
-# quantizations and file names; unsloth covers most of the rest.
-GGUF_AUTHORS = ["bartowski", "unsloth"]
-
-# The quantizations kept: the common choices from tiny to near-original quality. MXFP4 is
-# the format gpt-oss is released in.
-QUANTS = ["Q2_K", "Q3_K_M", "IQ4_XS", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "MXFP4"]
-
-# Files skipped: image readers for vision models (mmproj), and unsloth's "dynamic" (UD)
-# versions, which share quantization names with the standard files but are a different size.
-SKIP = re.compile(r"mmproj|(?:^|[/_-])UD-")
-QUANT_IN_NAME = re.compile(r"[-_.](IQ\d_[A-Z]+|Q\d_K(?:_[A-Z]+)?|Q\d_\d|MXFP4)(?=[-_.])")
-
-
-# Fetching. Gated models (Llama, Gemma) only share their config.json after signing in, so
-# model_list.csv points those at an exact public copy instead; an HF_TOKEN, if set, is used
-# for everything else.
+# The quantizations kept, from smallest to the unquantized original (fp16/bf16), as Ollama
+# spells them at the end of its tag names (qwen3:14b-q8_0).
+QUANTS = ["q2_K", "q3_K_M", "q4_0", "q4_K_M", "q5_K_M", "q6_K", "q8_0", "mxfp4", "fp16", "bf16"]
 
 
 def get(url: str, accept: str = "application/json"):
-    headers = {"Accept": accept, "User-Agent": "localtune-model-table"}
-    if url.startswith(HF) and os.environ.get("HF_TOKEN"):
-        headers["Authorization"] = f"Bearer {os.environ['HF_TOKEN']}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+    request = urllib.request.Request(
+        url, headers={"Accept": accept, "User-Agent": "localtune-model-table"}
+    )
+    return urllib.request.urlopen(request, timeout=60)
+
+
+def get_json(url: str, accept: str = "application/json") -> dict:
+    with get(url, accept) as r:
         return json.load(r)
 
 
-# Model facts. The parameter count is the exact total Hugging Face counts from the model's
-# own weight files. Layers, attention heads and context length come from its config.json
-# (inside "text_config" for models that also read images). Mixture-of-experts models only
-# use part of their parameters per word; that number isn't in config.json, so it comes from
-# the model card by hand (active_params in model_list.csv).
+def get_text(url: str) -> str:
+    with get(url, "text/html") as r:
+        return r.read().decode()
 
 
-def model_facts(entry: dict) -> dict:
-    info = get(f"{HF}/api/models/{entry['hf_repo']}")
-    config_repo = entry["config_repo"] or entry["hf_repo"]
-    config = get(f"{HF}/{config_repo}/resolve/main/config.json")
-    config = config.get("text_config", config)
-
-    heads = config.get("num_attention_heads")
-    head_dim = config.get("head_dim") or (config["hidden_size"] // heads if heads else None)
-    experts = (
-        config.get("num_local_experts")
-        or config.get("num_experts")
-        or config.get("n_routed_experts")
-        or ""
-    )
-    return {
-        "name": entry["name"],
-        "hf_repo": entry["hf_repo"],
-        "params": info["safetensors"]["total"],
-        "active_params": entry["active_params"] or info["safetensors"]["total"],
-        "layers": config["num_hidden_layers"],
-        "kv_heads": config.get("num_key_value_heads") or heads,
-        "head_dim": head_dim,
-        "context_length": config.get("max_position_embeddings", ""),
-        "experts": experts,
-        "experts_used": config.get("num_experts_per_tok", "") if experts else "",
-        "config_source": f"huggingface.co/{config_repo}",
-    }
+# The ranking: ollama.com/library?sort=popular lists every model with its pull count, the
+# sizes it comes in (8b, 70b) and what it can do. Embedding models are left out, since they
+# turn text into numbers for search rather than write, and so are models that only run in
+# Ollama's cloud.
 
 
-# File sizes on Hugging Face: find the GGUF copy made from the model's own repo (Hugging Face
-# tags most copies with the repo they came from; model_list.csv names the copy for the few
-# that aren't tagged), then read the size of each file in its file list. Big models are split
-# into several files per quantization; those are added up.
+def pulls_number(text: str) -> int:
+    scale = {"K": 1e3, "M": 1e6, "B": 1e9}.get(text[-1:].upper(), 1)
+    return int(float(text.rstrip("KMBkmb")) * scale)
 
 
-def find_gguf_repo(hf_repo: str) -> str | None:
-    for author in GGUF_AUTHORS:
-        query = urllib.parse.urlencode(
-            [("filter", f"base_model:quantized:{hf_repo}"), ("filter", "gguf"), ("author", author)]
-        )
-        repos = [m["id"] for m in get(f"{HF}/api/models?{query}")]
-        if repos:
-            return min(repos, key=len)
-    return None
-
-
-def hf_files(model: str, gguf_repo: str) -> list[dict]:
-    tree = get(f"{HF}/api/models/{gguf_repo}/tree/main?recursive=true")
-    sizes: dict[str, int] = {}
-    for item in tree:
-        name = item["path"].rsplit("/", 1)[-1]
-        found = QUANT_IN_NAME.search(name)
-        if item["type"] != "file" or not name.endswith(".gguf") or SKIP.search(item["path"]):
+def ranking() -> list[dict]:
+    html = get_text(f"{LIBRARY}?sort=popular")
+    models = []
+    for block in re.split(r"<li[^>]*x-test-model", html)[1:]:
+        name = re.search(r'href="/library/([^"/?#]+)"', block)
+        pulls = re.search(r"x-test-pull-count[^>]*>\s*([\d.]+[KMB]?)", block)
+        if not (name and pulls):
             continue
-        if found and found.group(1) in QUANTS:
-            sizes[found.group(1)] = sizes.get(found.group(1), 0) + item["size"]
-    return [
-        {
-            "model": model,
-            "quant": quant,
-            "size_bytes": sizes[quant],
-            "ollama": "",
-            "source": f"huggingface.co/{gguf_repo}",
-        }
-        for quant in QUANTS
-        if quant in sizes
-    ]
+        capabilities = re.findall(r"x-test-capability[^>]*>\s*([\w-]+)", block)
+        sizes = re.findall(r"x-test-size[^>]*>\s*([\w.]+)", block)
+        if "embedding" in capabilities:
+            continue
+        models.append(
+            {
+                "family": name.group(1),
+                "pulls": pulls_number(pulls.group(1)),
+                "sizes": sizes or ["latest"],
+            }
+        )
+    if not models:
+        sys.exit(f"Couldn't read Ollama's model list. Start of the page:\n{html[:3000]}")
+    return models
 
 
-# The file Ollama downloads for a name like qwen3:14b: its registry lists the model file's
-# size and fingerprint (the sha256 name it is saved under, see src/localtune/ollama_models.py),
-# and a small config file next to it says which quantization it is.
+def tag_list(family: str) -> list[str]:
+    html = get_text(f"{LIBRARY}/{family}/tags")
+    return sorted(set(re.findall(rf'href="/library/{re.escape(family)}:([^"]+)"', html)))
 
 
-def ollama_file(model: str, ollama_name: str) -> dict:
-    name, _, tag = ollama_name.partition(":")
-    path = name if "/" in name else f"library/{name}"
-    manifest = get(
-        f"{OLLAMA_REGISTRY}/{path}/manifests/{tag or 'latest'}",
+def manifest(family: str, tag: str) -> dict:
+    return get_json(
+        f"{REGISTRY}/{family}/manifests/{tag}",
         accept="application/vnd.docker.distribution.manifest.v2+json",
     )
-    layer = next(
-        layer
-        for layer in manifest["layers"]
-        if layer["mediaType"] == "application/vnd.ollama.image.model"
-    )
-    config = get(f"{OLLAMA_REGISTRY}/{path}/blobs/{manifest['config']['digest']}")
+
+
+def model_layer(m: dict) -> dict | None:
+    return next((layer for layer in m["layers"] if layer["mediaType"] == MODEL_LAYER), None)
+
+
+# The model's facts, read from the start of Ollama's own model file. A GGUF file begins with a
+# list of facts about the model (architecture, layers, attention heads, context length,
+# experts), then the name and shape of every block of weights in it. Only that beginning is
+# downloaded. Adding up the weight shapes gives the exact parameter count; for mixture-of-
+# experts models, the expert weights (named "_exps") count only for the experts used per word,
+# which gives the exact number of active parameters.
+
+
+class Stream:
+    def __init__(self, response):
+        self.response = response
+
+    def take(self, n: int) -> bytes:
+        data = self.response.read(n)
+        if len(data) != n:
+            raise ValueError("model file ended early")
+        return data
+
+    def num(self, fmt: str):
+        return struct.unpack("<" + fmt, self.take(struct.calcsize(fmt)))[0]
+
+    def string(self) -> str:
+        return self.take(self.num("Q")).decode(errors="replace")
+
+
+# How each kind of value is stored (8 is text and 9 a list, handled below).
+GGUF_SCALARS = {
+    0: "B",
+    1: "b",
+    2: "H",
+    3: "h",
+    4: "I",
+    5: "i",
+    6: "f",
+    7: "?",
+    10: "Q",
+    11: "q",
+    12: "d",
+}
+
+
+def gguf_value(s: Stream, kind: int):
+    if kind == 8:
+        return s.string()
+    if kind == 9:
+        item_kind, count = s.num("I"), s.num("Q")
+        return [gguf_value(s, item_kind) for _ in range(count)]
+    return s.num(GGUF_SCALARS[kind])
+
+
+def gguf_facts(family: str, digest: str) -> dict:
+    with get(f"{REGISTRY}/{family}/blobs/{digest}", accept="*/*") as response:
+        s = Stream(response)
+        if s.take(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        s.num("I")
+        tensor_count, kv_count = s.num("Q"), s.num("Q")
+        meta = {}
+        for _ in range(kv_count):
+            key = s.string()
+            meta[key] = gguf_value(s, s.num("I"))
+        params = expert_params = 0
+        for _ in range(tensor_count):
+            name = s.string()
+            dims = [s.num("Q") for _ in range(s.num("I"))]
+            s.num("I"), s.num("Q")
+            count = 1
+            for d in dims:
+                count *= d
+            params += count
+            if "_exps" in name:
+                expert_params += count
+
+    arch = meta["general.architecture"]
+
+    def fact(key):
+        value = meta.get(f"{arch}.{key}")
+        return max(value) if isinstance(value, list) else value
+
+    heads, experts, used = fact("attention.head_count"), fact("expert_count"), None
+    if experts:
+        used = fact("expert_used_count")
+        active = round(params - expert_params + expert_params * used / experts)
+    else:
+        active = params
     return {
-        "model": model,
-        "quant": config.get("file_type", "").upper(),
-        "size_bytes": layer["size"],
-        "ollama": ollama_name,
-        "source": f"ollama.com/library/{ollama_name}",
+        "architecture": arch,
+        "params": params,
+        "active_params": active,
+        "layers": fact("block_count"),
+        "kv_heads": fact("attention.head_count_kv") or heads,
+        "head_dim": fact("attention.key_length") or fact("embedding_length") // heads,
+        "context_length": fact("context_length"),
+        "experts": experts or "",
+        "experts_used": used or "",
     }
+
+
+# One size of a model (qwen3:14b): its facts and every quantization Ollama offers of it. The
+# name people type is a shortcut to one exact file, which also has a longer name that ends in
+# its quantization (qwen3:14b is the same file as qwen3:14b-q4_K_M). Finding that longer name
+# shows how Ollama names this size's other quantizations (qwen3:14b-q8_0, qwen3:14b-fp16).
+
+
+def quant_name(text: str) -> str:
+    return text.upper().replace("FP16", "F16")
+
+
+def one_size(
+    family: str, size: str, rank: int, pulls: int, tags: list[str], latest_digest
+) -> tuple:
+    name = f"{family}:{size}"
+    main = manifest(family, size)
+    layer = model_layer(main)
+    if layer is None:
+        return None, [], None
+    config = get_json(f"{REGISTRY}/{family}/blobs/{main['config']['digest']}")
+    model = {"name": name, "family": family, "popularity_rank": rank, "pulls": pulls}
+    model["latest"] = "yes" if layer["digest"] == latest_digest else "no"
+    model |= gguf_facts(family, layer["digest"])
+    quant = quant_name(config.get("file_type", ""))
+    files = [{"model": name, "quant": quant, "size_bytes": layer["size"]}]
+    files[0] |= {"ollama": name, "source": f"ollama.com/library/{name}"}
+
+    same_file = [
+        t for t in tags if t.startswith(size + "-") and quant_name(t.rsplit("-", 1)[-1]) == quant
+    ]
+    stem = next(
+        (
+            t.rsplit("-", 1)[0]
+            for t in same_file
+            if model_layer(manifest(family, t))["digest"] == layer["digest"]
+        ),
+        None,
+    )
+    for other_quant in QUANTS if stem else []:
+        tag = f"{stem}-{other_quant}"
+        if tag not in tags or quant_name(other_quant) == quant:
+            continue
+        other = model_layer(manifest(family, tag))
+        files.append(
+            {
+                "model": name,
+                "quant": quant_name(other_quant),
+                "size_bytes": other["size"],
+                "ollama": f"{family}:{tag}",
+                "source": f"ollama.com/library/{family}:{tag}",
+            }
+        )
+    return model, files, None
+
+
+def one_family(rank: int, entry: dict) -> tuple[list, list, list]:
+    models, files, notes = [], [], []
+    try:
+        tags = tag_list(entry["family"])
+        latest = model_layer(manifest(entry["family"], "latest")) if "latest" in tags else None
+        for size in entry["sizes"]:
+            try:
+                model, size_files, note = one_size(
+                    entry["family"], size, rank, entry["pulls"], tags, latest and latest["digest"]
+                )
+            except (urllib.error.URLError, KeyError, TypeError, ValueError) as e:
+                model, size_files, note = None, [], f"{entry['family']}:{size}: {e}"
+            if model:
+                models.append(model)
+                files.extend(size_files)
+            if note:
+                notes.append(note)
+    except (urllib.error.URLError, KeyError, TypeError) as e:
+        notes.append(f"{entry['family']}: {e}")
+    print(f"#{rank} {entry['family']}: {len(models)} sizes")
+    return models, files, notes
 
 
 def write(name: str, rows: list[dict]) -> None:
@@ -172,35 +291,27 @@ def write(name: str, rows: list[dict]) -> None:
     print(f"Wrote {name}: {len(rows)} rows")
 
 
-# Nothing is written if any model fails, so a bad week on Hugging Face can't shrink the
-# table; the problems are printed for whoever looks at the Action's log.
+# Sizes that only run in Ollama's cloud have no file and are left out quietly. A few sizes
+# failing (a file that isn't GGUF, an odd tag) is normal and they are listed in the log. If
+# many fail, something is wrong with Ollama or this script, and nothing is written, so a bad
+# week can't wipe out the table.
 
 
 def main() -> None:
-    with MODEL_LIST.open(newline="") as f:
-        entries = list(csv.DictReader(f))
+    top = ranking()[:TOP]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(one_family, range(1, len(top) + 1), top))
+    models = [m for r in results for m in r[0]]
+    files = [f for r in results for f in r[1]]
+    notes = [n for r in results for n in r[2]]
 
-    models, model_files, problems = [], [], []
-    for entry in entries:
-        try:
-            models.append(model_facts(entry))
-            gguf_repo = entry["gguf_repo"] or find_gguf_repo(entry["hf_repo"])
-            if gguf_repo is None:
-                problems.append(f"{entry['name']}: no GGUF copy by {', '.join(GGUF_AUTHORS)}")
-            else:
-                model_files.extend(hf_files(entry["name"], gguf_repo))
-            for ollama_name in entry["ollama"].split():
-                model_files.append(ollama_file(entry["name"], ollama_name))
-        except (urllib.error.URLError, KeyError, StopIteration, TypeError, ValueError) as e:
-            problems.append(f"{entry['name']}: {type(e).__name__}: {e}")
-        print(f"{entry['name']}: done")
-
-    if problems:
-        print("\nNot written, these need fixing in scripts/model_list.csv:")
-        print("\n".join(f"  {p}" for p in problems))
-        sys.exit(1)
+    print(f"\n{len(notes)} sizes failed:" if notes else "")
+    print("\n".join(f"  {n}" for n in notes))
+    tried = len(models) + len(notes)
+    if not models or len(notes) > tried / 10:
+        sys.exit(f"Not written: {len(notes)} of {tried} sizes failed.")
     write("models.csv", models)
-    write("model_files.csv", model_files)
+    write("model_files.csv", files)
 
 
 if __name__ == "__main__":
