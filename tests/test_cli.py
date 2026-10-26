@@ -212,6 +212,20 @@ def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
     assert load_results()[0].speed.decode_tok_s == 133.2
 
 
+def test_run_measures_deep_into_a_long_conversation(monkeypatch, tmp_path):
+    def deep_run(llama_bench, model, options, name=None):
+        run = example_run(llama_bench, model, options, name)
+        run.settings.depth = options.depth
+        return run
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, deep_run)
+    result = runner.invoke(cli.app, ["run", str(model), "--context", "16000"])
+    assert result.exit_code == 0
+    assert "Conversation so far" in result.output and "16,000 tokens" in result.output
+    assert load_results()[0].settings.depth == 16000
+
+
 def test_run_saves_a_failed_run(monkeypatch, tmp_path):
     def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
@@ -315,6 +329,8 @@ def test_run_refuses_llama_cpp_settings_for_a_server(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["run", "a", "-b", "api", "--kv-cache", "q8_0"])
     assert result.exit_code == 1
     assert "--kv-cache only work with llama.cpp" in result.output
+    result = runner.invoke(cli.app, ["run", "a", "-b", "api", "--context", "16000"])
+    assert "--context only work with llama.cpp" in result.output
 
 
 def wide_terminal(monkeypatch):
@@ -474,10 +490,24 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     )
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert result.exit_code == 0
-    assert "bigger than the GPU's memory" in result.output
+    assert "don't fit in the GPU's memory" in result.output
     assert "Fastest split: experts of 25 of 48 layers in RAM." in result.output
     assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
     assert len(load_results()) == 4 + 16
+
+
+def test_tune_measures_deep_into_a_long_conversation(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return tuned_run(llama_bench, model, options, name)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    result = runner.invoke(cli.app, ["tune", str(model), "--context", "16000"])
+    assert f"localtune run {model} --context 16000 --flash-attn" in result.output
+    assert {options.depth for options in asked} == {16000}
 
 
 def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
