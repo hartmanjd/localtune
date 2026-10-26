@@ -70,10 +70,20 @@ def test_other_failures_keep_the_error_line():
     assert "failed to load model" in str(error)
 
 
+# A pretend llama-bench is a small Python script. Linux runs it directly; Windows needs a
+# .cmd file that hands it to Python.
+
+
 def pretend_llama_bench(tmp_path, script):
-    path = tmp_path / "llama-bench"
-    path.write_text(f"#!{sys.executable}\n{script}")
-    path.chmod(0o755)
+    if sys.platform == "win32":
+        code = tmp_path / "llama_bench.py"
+        code.write_text(script)
+        path = tmp_path / "llama-bench.cmd"
+        path.write_text(f'@"{sys.executable}" "{code}" %*\n')
+    else:
+        path = tmp_path / "llama-bench"
+        path.write_text(f"#!{sys.executable}\n{script}")
+        path.chmod(0o755)
     return str(path)
 
 
