@@ -71,13 +71,14 @@ def pulls_number(text: str) -> int:
 def ranking() -> list[dict]:
     html = get_text(f"{LIBRARY}?sort=popular")
     models = []
-    for block in re.split(r"<li[^>]*x-test-model", html)[1:]:
-        name = re.search(r'href="/library/([^"/?#]+)"', block)
-        pulls = re.search(r"x-test-pull-count[^>]*>\s*([\d.]+[KMB]?)", block)
+    for block in html.split("<li ")[1:]:
+        name = re.search(r'href="/library/([^"/?#:]+)"', block)
+        pulls = re.search(r"<span\s*>([\d.]+[KMB]?)</span>\s*<span[^>]*>&nbsp;Pulls", block)
         if not (name and pulls):
             continue
-        capabilities = re.findall(r"x-test-capability[^>]*>\s*([\w-]+)", block)
-        sizes = re.findall(r"x-test-size[^>]*>\s*([\w.]+)", block)
+        labels = re.findall(r'rounded-md ([^"]*)"\s*>([^<]+)<', block)
+        sizes = [text.strip() for style, text in labels if "#ddf4ff" in style]
+        capabilities = [text.strip() for style, text in labels if "#ddf4ff" not in style]
         if "embedding" in capabilities:
             continue
         models.append(
@@ -89,9 +90,7 @@ def ranking() -> list[dict]:
         )
     if not models:
         first = max(html.find('href="/library/'), 0)
-        sys.exit(
-            f"Couldn't read Ollama's model list. Page near the first model:\n{html[first - 500 : first + 2500]}"
-        )
+        sys.exit("Couldn't read Ollama's model list:\n" + html[first - 500 : first + 2500])
     return models
 
 
