@@ -85,7 +85,7 @@ def check_servers(servers: list[str]) -> Check:
         name="Local AI server",
         status="warn",
         detail="none running",
-        fix="Only needed to benchmark a server: start Ollama, llama-server or LM Studio.",
+        fix="Only needed for 'localtune run -b api': start Ollama, llama-server or LM Studio.",
     )
 
 
@@ -143,11 +143,11 @@ def find_local_servers(
     return found
 
 
-# Ready means nothing failed and llama-bench is there, the engine "localtune run" uses. A running
-# local AI server is shown but can't be benchmarked yet. When llama.cpp is the missing piece on
-# a computer with a working GPU, install.py can fill it in.
+# Ready means nothing failed and there's an engine "localtune run" can use: llama-bench, or a
+# running local AI server (for "-b api"). When llama.cpp is the missing piece on a computer with
+# a working GPU, install.py can fill it in.
 
-ENGINE_CHECKS = ("llama-bench",)
+ENGINE_CHECKS = ("llama-bench", "Local AI server")
 
 
 def needs_llama_cpp(checks: list[Check]) -> bool:

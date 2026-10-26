@@ -71,9 +71,9 @@ def ok(name):
     return Check(name=name, status="ok", detail="")
 
 
-def test_ready_needs_llama_bench():
+def test_ready_needs_llama_bench_or_a_server():
     assert doctor.is_ready([ok("NVIDIA GPU"), ok("llama-bench")])
-    assert not doctor.is_ready([ok("NVIDIA GPU"), ok("Local AI server")])
+    assert doctor.is_ready([ok("NVIDIA GPU"), ok("Local AI server")])
     assert not doctor.is_ready([ok("NVIDIA GPU"), ok("Disk space")])
 
 
