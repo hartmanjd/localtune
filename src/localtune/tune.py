@@ -39,13 +39,27 @@ def describe(settings: dict) -> str:
     return f"flash attn {flash}, KV {settings['kv_cache']}, micro-batch {settings['ubatch_size']}"
 
 
-# The fastest run is the one that writes fastest (decode tok/s), the speed people feel while
-# an answer appears. Runs that failed, like running out of GPU memory, can't win.
+# The fastest run is the one that gives a whole answer soonest: the time to read the prompt
+# plus the time to write the answer. With a short prompt that is mostly writing speed (decode
+# tok/s), the speed people feel while an answer appears; with a long prompt, like a pasted
+# document, reading it matters as much. Judging by both also catches a GPU so full that it has
+# started borrowing slow RAM, which on Windows can leave writing fast but make reading crawl.
+# Runs that failed, like running out of GPU memory, can't win.
+
+
+def answer_seconds(run: RunResult) -> float | None:
+    speed = run.speed
+    if run.status != "ok" or not (speed and speed.prefill_tok_s and speed.decode_tok_s):
+        return None
+    total_s = (
+        speed.prompt_tokens / speed.prefill_tok_s + speed.generated_tokens / speed.decode_tok_s
+    )
+    return total_s / run.repetitions
 
 
 def fastest(runs: list[RunResult]) -> RunResult | None:
-    worked = [run for run in runs if run.status == "ok" and run.speed and run.speed.decode_tok_s]
-    return max(worked, key=lambda run: run.speed.decode_tok_s, default=None)
+    worked = [run for run in runs if answer_seconds(run) is not None]
+    return min(worked, key=answer_seconds, default=None)
 
 
 # The "localtune run" options that repeat the winner's tuned settings, so it can be used again.
@@ -104,23 +118,23 @@ def first_guess(
 def find_best_split(
     try_split: Callable[[int], float | None], start: int, layers: int, max_tries: int = 12
 ) -> int | None:
-    """Tries splits around the first guess; try_split gives a split's speed, or None on failure."""
-    speeds: dict[int, float | None] = {}
+    """Tries splits around the first guess; try_split gives a split's answer time, or None."""
+    times: dict[int, float | None] = {}
 
-    def speed(on_gpu: int) -> float | None:
-        if on_gpu not in speeds:
-            speeds[on_gpu] = try_split(on_gpu)
-        return speeds[on_gpu]
+    def time(on_gpu: int) -> float | None:
+        if on_gpu not in times:
+            times[on_gpu] = try_split(on_gpu)
+        return times[on_gpu]
 
     on_gpu = start
-    while speed(on_gpu) is None:
-        if on_gpu == 0 or len(speeds) >= max_tries:
+    while time(on_gpu) is None:
+        if on_gpu == 0 or len(times) >= max_tries:
             return None
         on_gpu = max(0, on_gpu - 2)
     for step in (1, -1):
-        while 0 <= on_gpu + step <= layers and len(speeds) < max_tries:
-            faster = speed(on_gpu + step)
-            if faster is None or faster <= speeds[on_gpu]:
+        while 0 <= on_gpu + step <= layers and len(times) < max_tries:
+            quicker = time(on_gpu + step)
+            if quicker is None or quicker >= times[on_gpu]:
                 break
             on_gpu += step
     return on_gpu
