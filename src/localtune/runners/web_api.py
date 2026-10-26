@@ -207,12 +207,21 @@ def describe_failure(server: Server, body: str) -> BackendError:
 # which is mostly the server reading the prompt, so prefill speed is the prompt over that wait.
 # Decode speed is the rest of the answer over the time it took to stream. llama-server measures
 # both itself, without the time spent sending, so its own numbers are used when given.
+# A server whose context window is smaller than the prompt quietly cuts the prompt short (Ollama
+# keeps only a few thousand tokens unless told otherwise), which would make a long-prompt test
+# look fast. Its own token count shows that, and such a run is refused instead of saved.
 
 
 def reply_speed(reply: Reply, asked_prompt_tokens: int) -> Speed:
     if reply.first_token_s is None:
         raise BackendError("the server answered without writing anything")
     prompt_tokens = reply.prompt_tokens or asked_prompt_tokens
+    if prompt_tokens < asked_prompt_tokens * 0.8:
+        raise BackendError(
+            f"the server only read {prompt_tokens:,} of the {asked_prompt_tokens:,}-token prompt, "
+            "so its context window is too small. For Ollama, set OLLAMA_CONTEXT_LENGTH to a "
+            "bigger number and restart it."
+        )
     generated = reply.generated_tokens or reply.pieces
     wait_s = reply.first_token_s - reply.sent_s
     stream_s = reply.finished_s - reply.first_token_s

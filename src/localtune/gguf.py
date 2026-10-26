@@ -3,8 +3,10 @@
 # A .gguf model file (the kind llama.cpp and Ollama use) begins with a list of facts about the
 # model, then the name and shape of every block of weights in it; the weights themselves come
 # after. Reading only that beginning tells localtune how many layers the model has and, for a
-# mixture-of-experts model, how much of it is experts, without loading gigabytes. "localtune
-# tune" (tune.py) uses this to work out how much of a model too big for the GPU can go on it.
+# mixture-of-experts model, how much of it is experts, without loading gigabytes. It also says
+# how much memory each token of the conversation takes (the KV cache), which grows with the
+# conversation's length. "localtune tune" (tune.py) uses this to work out how much of a model
+# too big for the GPU can go on it.
 
 import struct
 from pathlib import Path
@@ -17,6 +19,7 @@ class ModelLayout(BaseModel):
     layers: int
     experts: int | None
     expert_share: float  # how much of the model's weights are experts, from 0 to 1
+    kv_bytes_per_token: int = 0  # at full quality (f16); 0 if the file doesn't say
 
 
 class GgufError(Exception):
@@ -65,6 +68,26 @@ def value(f: BinaryIO, kind: int):
     return number(f, SCALARS[kind])
 
 
+# Each token of the conversation keeps a key and a value per attention head that shares them
+# ("KV heads") in every layer, at 2 bytes per number in an f16 cache. Some models give a
+# different head count per layer.
+
+
+def kv_bytes_per_token(meta: dict, arch: str, layers: int) -> int:
+    heads = meta.get(f"{arch}.attention.head_count")
+    kv_heads = meta.get(f"{arch}.attention.head_count_kv", heads)
+    if isinstance(heads, list):
+        heads = max(heads)
+    key = meta.get(f"{arch}.attention.key_length")
+    if key is None and heads and meta.get(f"{arch}.embedding_length"):
+        key = meta[f"{arch}.embedding_length"] // heads
+    value = meta.get(f"{arch}.attention.value_length", key)
+    if not (kv_heads and key and value):
+        return 0
+    per_layer = kv_heads if isinstance(kv_heads, list) else [kv_heads] * layers
+    return sum(n * (key + value) * 2 for n in per_layer)
+
+
 # Expert weights are the blocks named "_exps"; their share of all weights is counted by number
 # of values, which is close to their share of the file since they use the same quantization.
 
@@ -98,4 +121,5 @@ def read_layout(path: Path) -> ModelLayout:
         layers=layers,
         experts=meta.get(f"{arch}.expert_count") or None,
         expert_share=experts / total if total else 0.0,
+        kv_bytes_per_token=kv_bytes_per_token(meta, arch, layers),
     )

@@ -155,6 +155,12 @@ def test_llama_servers_own_timings_are_used():
     assert (speed.prompt_tokens, speed.generated_tokens) == (512, 10)
 
 
+def test_a_prompt_the_server_cut_short_is_a_backend_error():
+    reply = Reply(sent_s=0, first_token_s=1, finished_s=2, prompt_tokens=4096, pieces=10)
+    with pytest.raises(BackendError, match="only read 4,096 of the 16,000-token prompt"):
+        web_api.reply_speed(reply, 16000)
+
+
 def test_an_empty_answer_is_a_backend_error():
     with pytest.raises(BackendError, match="without writing"):
         web_api.reply_speed(Reply(sent_s=0, finished_s=1), 512)

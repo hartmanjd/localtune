@@ -467,7 +467,8 @@ def tune(
     combos, runs = combinations(), []
     try:
         if gpu_layers is None and cpu_moe is None:
-            placement = find_split(model_file, gpu, bench) or placement
+            tokens = prompt_tokens + gen_tokens
+            placement = find_split(model_file, gpu, bench, tokens) or placement
         console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
         started = time.monotonic()
         for number, settings in enumerate(combos, 1):
@@ -479,6 +480,7 @@ def tune(
         console.print("Stopped. The runs that finished are saved.")
 
     fixed = {
+        "--prompt-tokens": prompt_tokens if prompt_tokens != 512 else None,
         "--gpu-layers": placement["gpu_layers"],
         "--cpu-moe": placement.get("cpu_moe_layers"),
         "--threads": threads,
@@ -495,7 +497,7 @@ def tune(
 # this step.
 
 
-def find_split(model_file: Path, gpu: int, bench) -> dict | None:
+def find_split(model_file: Path, gpu: int, bench, tokens: int) -> dict | None:
     gpus = detect_hardware().gpus
     if gpu >= len(gpus):
         return None
@@ -504,14 +506,14 @@ def find_split(model_file: Path, gpu: int, bench) -> dict | None:
     except (GgufError, OSError):
         return None
     size = model_file.stat().st_size
-    guess = first_guess(size, layout, gpus[gpu].vram_gb)
+    guess = first_guess(size, layout, gpus[gpu].vram_gb, tokens)
     if guess is None:
         return None
 
     console.print(
-        f"The model ({size / 1024**3:.1f} GB) is bigger than the GPU's memory "
-        f"({gpus[gpu].vram_gb:.0f} GB), so part of it has to stay in RAM. "
-        "First finding how much fits on the GPU."
+        f"The model ({size / 1024**3:.1f} GB) and a {tokens:,}-token conversation don't fit "
+        f"in the GPU's memory ({gpus[gpu].vram_gb:.0f} GB), so part of the model has to stay "
+        "in RAM. First finding how much fits on the GPU."
     )
 
     def try_split(on_gpu: int) -> float | None:

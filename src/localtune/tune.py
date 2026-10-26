@@ -67,7 +67,9 @@ def run_flags(run: RunResult) -> str:
 #     whole layers, and it is how these models are usually run on home GPUs.
 # Either way the choice is one number: how many layers' worth of weights are on the GPU.
 # tune.py makes a first guess from the file size and the GPU's memory, then tries one more
-# and one fewer, keeping the fastest, so only a handful of runs are needed.
+# and one fewer, keeping the fastest, so only a handful of runs are needed. A long conversation
+# needs its own memory on the GPU (the KV cache), so the longer it is, the less of the model
+# fits beside it.
 
 RESERVED_GB = 1.5  # left free for the desktop, the KV cache and llama.cpp's working memory
 
@@ -84,9 +86,11 @@ def describe_split(on_gpu: int, layout: ModelLayout) -> str:
     return f"{on_gpu} of {layout.layers} layers on the GPU"
 
 
-def first_guess(file_bytes: int, layout: ModelLayout, vram_gb: float) -> int | None:
+def first_guess(
+    file_bytes: int, layout: ModelLayout, vram_gb: float, context: int = 0
+) -> int | None:
     """How many layers' weights should fit on the GPU, or None if the whole model fits."""
-    usable = (vram_gb - RESERVED_GB) * 1024**3
+    usable = (vram_gb - RESERVED_GB) * 1024**3 - context * layout.kv_bytes_per_token
     if file_bytes <= usable:
         return None
     if layout.experts and layout.expert_share:
