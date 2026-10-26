@@ -12,9 +12,11 @@ from localtune import cli
 from localtune.doctor import Check
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
-from localtune.results import load_results
-from localtune.runners.base import BackendError
+from localtune.results import Speed, load_results
+from localtune.runners.base import BackendError, EngineRun
 from localtune.runners.llamacpp import parse_output
+from localtune.runners.web_api import Server
+from localtune.runners.web_api import requested_settings as web_api_settings
 
 runner = CliRunner()
 
@@ -231,6 +233,58 @@ def test_run_refuses_an_unknown_kv_cache_type(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert "Unknown KV cache type" in result.output
     assert load_results() == []
+
+
+# 'localtune run -b api' with a pretend server found on this computer, and a pretend runner that
+# gives back made-up speeds.
+
+OLLAMA = Server(name="Ollama", version="0.12.6", url="http://127.0.0.1:11434", models=["a", "b"])
+
+
+def fake_api_run(monkeypatch, tmp_path, server=OLLAMA):
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
+    monkeypatch.setattr(cli, "find_server", lambda url: server)
+
+    def run_web_api(server, model, options):
+        speed = Speed(
+            prompt_tokens=1500, generated_tokens=384, prefill_tok_s=3100, decode_tok_s=98.5
+        )
+        return EngineRun(settings=web_api_settings(server, model, options), speed=speed)
+
+    monkeypatch.setattr(cli, "run_web_api", run_web_api)
+
+
+def test_run_benchmarks_a_server(monkeypatch, tmp_path):
+    fake_api_run(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["run", "b", "-b", "api", "--price", "0.20"])
+    assert result.exit_code == 0
+    assert "98.5 tok/s" in result.output
+    assert "Ollama 0.12.6" in result.output
+    saved = load_results()[0]
+    assert (saved.settings.engine, saved.settings.model) == ("Ollama", "b")
+
+
+def test_run_asks_which_model_when_the_server_has_several(monkeypatch, tmp_path):
+    fake_api_run(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["run", "-b", "api"])
+    assert result.exit_code == 1
+    assert "Its models: a, b" in result.output
+    assert load_results() == []
+
+
+def test_run_without_a_server(monkeypatch, tmp_path):
+    fake_api_run(monkeypatch, tmp_path, server=None)
+    result = runner.invoke(cli.app, ["run", "-b", "api"])
+    assert result.exit_code == 1
+    assert "No local AI server found" in result.output
+
+
+def test_run_refuses_llama_cpp_settings_for_a_server(monkeypatch, tmp_path):
+    fake_api_run(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["run", "a", "-b", "api", "--kv-cache", "q8_0"])
+    assert result.exit_code == 1
+    assert "--kv-cache only work with llama.cpp" in result.output
 
 
 def wide_terminal(monkeypatch):

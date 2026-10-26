@@ -8,6 +8,7 @@
 
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
@@ -43,6 +44,8 @@ from localtune.runners.llamacpp import (
     requested_settings,
     run_llama_bench,
 )
+from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
+from localtune.runners.web_api import requested_settings as web_api_settings
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -170,15 +173,30 @@ def offer_llama_cpp(ask: bool) -> bool:
     return True
 
 
-# "localtune run": benchmarks one model file with llama.cpp and saves the result. While
-# llama-bench runs, the GPU is watched and the energy priced (runners/base.py); afterwards the
-# speeds, energy and cost are shown, and the run is added to the results file (results.py).
-# A failed run is saved too, and ends with an error code.
+# "localtune run": benchmarks a model and saves the result. With llama.cpp (the default) it
+# benchmarks a model file; with "-b api" it benchmarks a model in a local AI server that's
+# already running (runners/web_api.py), found by itself or at --url. While the engine runs, the
+# GPU is watched and the energy priced (runners/base.py); afterwards the speeds, energy and cost
+# are shown, and the run is added to the results file (results.py). A failed run is saved too,
+# and ends with an error code.
+
+BACKENDS = ("llama.cpp", "api")
 
 
 @app.command()
 def run(
-    model: Annotated[Path, typer.Argument(help="The model file (.gguf) to benchmark.")],
+    model: Annotated[
+        str | None,
+        typer.Argument(
+            help="The model file (.gguf), or with -b api the model's name in the server."
+        ),
+    ] = None,
+    backend: str = typer.Option(
+        "llama.cpp", "--backend", "-b", help="llama.cpp, or api for a running local AI server."
+    ),
+    url: str | None = typer.Option(
+        None, help="-b api: the server's address, like http://localhost:11434, if not found."
+    ),
     prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
     gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
@@ -203,41 +221,69 @@ def run(
         None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
     ),
 ) -> None:
-    """Benchmark a model file with llama.cpp and save the result."""
-    llama_bench = find_tool("llama-bench")
-    if llama_bench is None:
-        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
-        raise typer.Exit(1)
-    if not model.is_file():
-        console.print(f"Model file not found: {model}")
-        raise typer.Exit(1)
-    if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
-        console.print(f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_TYPES)}")
+    """Benchmark a model with llama.cpp or a local AI server, and save the result."""
+    if backend not in BACKENDS:
+        console.print(f"Unknown backend {backend}. Choose from: {', '.join(BACKENDS)}")
         raise typer.Exit(1)
 
-    options = BenchOptions(
-        prompt_tokens=prompt_tokens,
-        gen_tokens=gen_tokens,
-        repetitions=repetitions,
-        gpu_layers=gpu_layers,
-        cpu_moe_layers=cpu_moe,
-        kv_cache=kv_cache,
-        flash_attention=flash_attn,
-        threads=threads,
-        batch_size=batch_size,
-        ubatch_size=ubatch_size,
-        gpu_index=gpu,
-    )
-    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-
-    with console.status(f"Benchmarking {model.name} with llama.cpp..."):
-        result = measure(
-            lambda: run_llama_bench(llama_bench, model, options),
-            requested_settings(model, options),
-            electricity,
-            repetitions,
+    if backend == "api":
+        engine_only = {
+            "--gpu-layers": gpu_layers,
+            "--cpu-moe": cpu_moe,
+            "--kv-cache": kv_cache,
+            "--flash-attn": flash_attn,
+            "--threads": threads,
+            "--batch-size": batch_size,
+            "--ubatch-size": ubatch_size,
+        }
+        given = [flag for flag, value in engine_only.items() if value is not None]
+        if given:
+            console.print(
+                f"{', '.join(given)} only work with llama.cpp. A server keeps the settings "
+                "it was started with."
+            )
+            raise typer.Exit(1)
+        options = ApiOptions(
+            prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, repetitions=repetitions
+        )
+        server, model_name = choose_server_and_model(url, model)
+        engine = partial(run_web_api, server, model_name, options)
+        requested = web_api_settings(server, model_name, options)
+        label = f"Benchmarking {model_name} in {server.name} at {server.url}..."
+    else:
+        llama_bench = find_tool("llama-bench")
+        if llama_bench is None:
+            console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+            raise typer.Exit(1)
+        if model is None or not Path(model).is_file():
+            console.print(f"Model file not found: {model or 'none given'}")
+            raise typer.Exit(1)
+        if kv_cache is not None and kv_cache not in KV_CACHE_TYPES:
+            console.print(
+                f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_TYPES)}"
+            )
+            raise typer.Exit(1)
+        options = BenchOptions(
+            prompt_tokens=prompt_tokens,
+            gen_tokens=gen_tokens,
+            repetitions=repetitions,
+            gpu_layers=gpu_layers,
+            cpu_moe_layers=cpu_moe,
+            kv_cache=kv_cache,
+            flash_attention=flash_attn,
+            threads=threads,
+            batch_size=batch_size,
+            ubatch_size=ubatch_size,
             gpu_index=gpu,
         )
+        model_file = Path(model)
+        engine = partial(run_llama_bench, llama_bench, model_file, options)
+        requested = requested_settings(model_file, options)
+        label = f"Benchmarking {model_file.name} with llama.cpp..."
+
+    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
+    with console.status(label):
+        result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
     path = save_result(result)
 
     if result.status != "ok":
@@ -249,13 +295,43 @@ def run(
     console.print(f"Saved to {path}")
 
 
+# For "-b api": finds the running server and the model in it to benchmark, or says what's
+# missing. When the server has several models and none was named, it lists them to choose from.
+
+
+def choose_server_and_model(url: str | None, wanted: str | None):
+    server = find_server(url)
+    if server is None:
+        where = url or "the usual ports"
+        console.print(
+            f"No local AI server found at {where}. Start Ollama, llama-server or LM Studio, "
+            "or give its address with --url."
+        )
+        raise typer.Exit(1)
+    model = pick_model(server.models, wanted)
+    if model is None:
+        if wanted:
+            console.print(f"{server.name} doesn't have a model called {wanted}.")
+        else:
+            console.print(f"{server.name} has several models. Name the one to benchmark.")
+        console.print("Its models: " + (", ".join(server.models) or "none"))
+        raise typer.Exit(1)
+    return server, model
+
+
 def show_run(result: RunResult) -> None:
     speed, gpu, energy = result.speed, result.gpu, result.energy
     unit = energy.price.currency
-    table = Table(title=f"{result.settings.model} ({result.settings.quant})", show_header=False)
-    table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
-    table.add_row("Decode", f"{speed.decode_tok_s:,.1f} tok/s")
-    table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
+    settings = result.settings
+    title = settings.model + (f" ({settings.quant})" if settings.quant else "")
+    table = Table(title=title, show_header=False)
+    table.add_row("Engine", " ".join(filter(None, [settings.engine, settings.engine_version])))
+    if speed.prefill_tok_s is not None:
+        table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
+    if speed.decode_tok_s is not None:
+        table.add_row("Decode", f"{speed.decode_tok_s:,.1f} tok/s")
+    if speed.ttft_ms is not None:
+        table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
     if gpu is not None:
         table.add_row("Peak VRAM", f"{gpu.peak_vram_gb:.1f} GB")
         if gpu.avg_power_w is not None:
