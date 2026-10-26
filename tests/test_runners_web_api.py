@@ -111,6 +111,14 @@ def test_streams_and_reads_an_answer(servers):
     assert requests[0]["stream"] is True
 
 
+def test_thinking_counts_as_writing():
+    reply = {"pieces": 0}
+    web_api.read_chunk({"choices": [{"delta": {"reasoning": "Hmm"}}]}, reply)
+    web_api.read_chunk({"choices": [{"delta": {"content": "Hi"}}]}, reply)
+    assert reply["pieces"] == 2
+    assert "first_token_s" in reply
+
+
 def test_server_errors_are_backend_errors(servers):
     body = b'{"error": {"message": "CUDA error: out of memory"}}'
     url, _ = servers(MODELS, status=500, error=body)
