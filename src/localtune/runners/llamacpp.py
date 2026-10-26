@@ -24,15 +24,12 @@ ENGINE = "llama.cpp"
 KV_CACHE_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
 
 # What a llama-bench run is asked to do. Settings left empty use llama-bench's own defaults,
-# and the saved record shows the values it actually used. "depth" is how long the conversation
-# already is: llama-bench reads that many tokens first, without timing them, then measures the
-# prompt and the answer on top, the way a long chat or a pasted document slows a model down.
+# and the saved record shows the values it actually used.
 
 
 class BenchOptions(BaseModel):
     prompt_tokens: int = 512
     gen_tokens: int = 128
-    depth: int = 0
     repetitions: int = 3
     gpu_layers: int | None = None
     cpu_moe_layers: int | None = None
@@ -55,7 +52,6 @@ def build_command(llama_bench: str, model: Path, options: BenchOptions) -> list[
         "-o", "json",
     ]  # fmt: skip
     optional = {
-        "-d": options.depth or None,
         "-ngl": options.gpu_layers,
         "-ncmoe": options.cpu_moe_layers,
         "-ctk": options.kv_cache,
@@ -104,8 +100,7 @@ def parse_output(stdout: str, model: Path, repetitions: int, name: str | None = 
         model=name or model.stem,
         model_file=model.name,
         quant=quant_name(prefill["model_type"]),
-        context_size=prefill.get("n_depth", 0) + prefill["n_prompt"] + decode["n_gen"],
-        depth=prefill.get("n_depth") or None,
+        context_size=prefill["n_prompt"] + decode["n_gen"],
         gpu_layers=prefill["n_gpu_layers"],
         cpu_moe_layers=prefill.get("n_cpu_moe"),
         kv_cache_k=prefill["type_k"],
@@ -164,8 +159,7 @@ def requested_settings(model: Path, options: BenchOptions, name: str | None = No
         engine=ENGINE,
         model=name or model.stem,
         model_file=model.name,
-        context_size=options.depth + options.prompt_tokens + options.gen_tokens,
-        depth=options.depth or None,
+        context_size=options.prompt_tokens + options.gen_tokens,
         gpu_layers=options.gpu_layers,
         cpu_moe_layers=options.cpu_moe_layers,
         kv_cache_k=options.kv_cache,

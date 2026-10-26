@@ -3,7 +3,6 @@
 # run on an RTX 4070 Ti SUPER), and llama-bench itself is replaced by small pretend programs, so
 # no GPU, model file or llama.cpp install is needed.
 
-import json
 import sys
 from pathlib import Path
 
@@ -51,24 +50,6 @@ def test_command_sets_kv_cache_and_flash_attention():
     assert command[command.index("-ctk") + 1] == "q8_0"
     assert command[command.index("-ctv") + 1] == "q8_0"
     assert command[command.index("-fa") + 1] == "off"
-
-
-def test_command_starts_deep_into_a_conversation_only_when_asked():
-    assert "-d" not in llamacpp.build_command("llama-bench", MODEL, BenchOptions())
-    command = llamacpp.build_command("llama-bench", MODEL, BenchOptions(depth=16000))
-    assert command[command.index("-d") + 1] == "16000"
-
-
-def test_reads_how_deep_into_a_conversation_it_was_measured():
-    tests = json.loads(EXAMPLE)
-    for test in tests:
-        test["n_depth"] = 16000
-    run = llamacpp.parse_output(json.dumps(tests), MODEL, repetitions=3)
-    assert run.settings.depth == 16000
-    assert run.settings.context_size == 16000 + 512 + 128
-    assert llamacpp.parse_output(EXAMPLE, MODEL, repetitions=3).settings.depth is None
-    requested = llamacpp.requested_settings(MODEL, BenchOptions(depth=8000))
-    assert requested.depth == 8000 and requested.context_size == 8000 + 512 + 128
 
 
 def test_reads_speeds_and_the_settings_used():

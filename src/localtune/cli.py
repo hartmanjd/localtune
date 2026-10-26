@@ -225,11 +225,6 @@ def run(
     ),
     prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
     gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
-    context: int | None = typer.Option(
-        None,
-        help="How many tokens are already in the conversation, like 16000 for a long chat or "
-        "a pasted document. Speeds are measured on top of it.",
-    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
     cpu_moe: int | None = typer.Option(
@@ -259,7 +254,6 @@ def run(
 
     if backend == "api":
         engine_only = {
-            "--context": context,
             "--gpu-layers": gpu_layers,
             "--cpu-moe": cpu_moe,
             "--kv-cache": kv_cache,
@@ -287,7 +281,6 @@ def run(
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
-            depth=context or 0,
             repetitions=repetitions,
             gpu_layers=gpu_layers,
             cpu_moe_layers=cpu_moe,
@@ -389,8 +382,6 @@ def show_run(result: RunResult) -> None:
     title = settings.model + (f" ({settings.quant})" if settings.quant else "")
     table = Table(title=title, show_header=False)
     table.add_row("Engine", " ".join(filter(None, [settings.engine, settings.engine_version])))
-    if settings.depth:
-        table.add_row("Conversation so far", f"{settings.depth:,} tokens")
     if speed.prefill_tok_s is not None:
         table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
     if speed.decode_tok_s is not None:
@@ -433,11 +424,6 @@ def tune(
     ] = None,
     prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
     gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
-    context: int | None = typer.Option(
-        None,
-        help="How many tokens are already in the conversation, like 16000 for a long chat or "
-        "a pasted document. Speeds are measured on top of it.",
-    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
     cpu_moe: int | None = typer.Option(
@@ -465,7 +451,6 @@ def tune(
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
-            depth=context or 0,
             repetitions=repetitions,
             threads=threads,
             gpu_index=gpu,
@@ -482,7 +467,7 @@ def tune(
     combos, runs = combinations(), []
     try:
         if gpu_layers is None and cpu_moe is None:
-            tokens = (context or 0) + prompt_tokens + gen_tokens
+            tokens = prompt_tokens + gen_tokens
             placement = find_split(model_file, gpu, bench, tokens) or placement
         console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
         started = time.monotonic()
@@ -495,7 +480,7 @@ def tune(
         console.print("Stopped. The runs that finished are saved.")
 
     fixed = {
-        "--context": context,
+        "--prompt-tokens": prompt_tokens if prompt_tokens != 512 else None,
         "--gpu-layers": placement["gpu_layers"],
         "--cpu-moe": placement.get("cpu_moe_layers"),
         "--threads": threads,
@@ -582,8 +567,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
         key=lambda run: run.speed.decode_tok_s,
         reverse=True,
     )
-    depth = f", {best.settings.depth:,} tokens into a conversation" if best.settings.depth else ""
-    table = Table(title=f"{best.settings.model}{depth}, fastest first")
+    table = Table(title=f"{best.settings.model}, fastest first")
     for column in ("Flash attn", "KV cache", "Micro-batch"):
         table.add_column(column)
     for column in ("Decode tok/s", "Prefill tok/s", "Peak VRAM"):
@@ -672,7 +656,7 @@ def result_row(run: RunResult) -> list[str]:
 
 
 def settings_summary(settings: RunSettings) -> str:
-    parts = [f"{settings.depth:,} tokens in"] if settings.depth else []
+    parts = []
     if settings.gpu_layers is not None:
         layers = "all" if settings.gpu_layers < 0 else settings.gpu_layers
         parts.append(f"GPU layers {layers}")

@@ -38,7 +38,6 @@ class RunSettings(BaseModel):
     model_file: str | None = None
     quant: str | None = None
     context_size: int | None = None
-    depth: int | None = None  # tokens already in the conversation before the prompt
     gpu_layers: int | None = None
     cpu_moe_layers: int | None = None
     kv_cache_k: str | None = None
