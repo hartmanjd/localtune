@@ -247,7 +247,7 @@ def test_results_shows_saved_runs(monkeypatch, tmp_path):
     assert "Saved runs (1 of 1)" in result.output
     assert "7,612" in result.output
     assert "133.2" in result.output
-    assert "99 GPU layers, KV f16" in result.output
+    assert "GPU layers 99, KV f16" in result.output
 
 
 def test_results_lists_failed_runs(monkeypatch, tmp_path):

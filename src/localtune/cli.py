@@ -294,15 +294,12 @@ def results(
         return
     shown = runs[-last:]
 
-    table = Table(
-        title=f"Saved runs ({len(shown)} of {len(runs)})",
-        caption="Prefill and decode in tokens per second",
-    )
+    table = Table(title=f"Saved runs ({len(shown)} of {len(runs)})")
     table.add_column("When", no_wrap=True)
     table.add_column("Model", overflow="fold")
     for column in ("Quant", "Settings", "Result"):
         table.add_column(column)
-    for column in ("Prefill", "Decode", "VRAM", "Cost/1M tok"):
+    for column in ("Prefill tok/s", "Decode tok/s", "Peak VRAM", "Cost/1M tok"):
         table.add_column(column, justify="right")
     for run in shown:
         table.add_row(*result_row(run))
@@ -336,7 +333,7 @@ def result_row(run: RunResult) -> list[str]:
 def settings_summary(settings: RunSettings) -> str:
     parts = []
     if settings.gpu_layers is not None:
-        parts.append(f"{settings.gpu_layers} GPU layers")
+        parts.append(f"GPU layers {settings.gpu_layers}")
     if settings.cpu_moe_layers:
         parts.append(f"{settings.cpu_moe_layers} expert layers in RAM")
     if settings.kv_cache_k is not None:
