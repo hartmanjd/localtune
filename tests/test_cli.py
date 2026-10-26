@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from localtune import cli
 from localtune.doctor import Check
+from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import Speed, load_results
@@ -17,6 +18,7 @@ from localtune.runners.base import BackendError, EngineRun
 from localtune.runners.llamacpp import parse_output
 from localtune.runners.web_api import Server
 from localtune.runners.web_api import requested_settings as web_api_settings
+from localtune.tune import RESERVED_GB
 
 runner = CliRunner()
 
@@ -447,6 +449,52 @@ def test_tune_keeps_settings_that_arent_tuned(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["tune", str(model), "--gpu-layers", "30"])
     assert f"localtune run {model} --gpu-layers 30 --flash-attn" in result.output
     assert {options.gpu_layers for options in asked} == {30}
+
+
+def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
+    # A mixture-of-experts model twice the GPU's free memory, where keeping the experts of
+    # fewer than 25 layers in RAM runs out of GPU memory and more in RAM is slower.
+    def split_run(llama_bench, model, options, name=None):
+        if options.cpu_moe_layers < 25:
+            raise BackendError("cudaMalloc failed", status="out_of_memory")
+        if options.ubatch_size is None:
+            run = example_run(llama_bench, model, options, name)
+            run.speed.decode_tok_s = 100 - options.cpu_moe_layers
+            return run
+        return tuned_run(llama_bench, model, options, name)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, split_run)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=48, experts=128, expert_share=0.9)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert result.exit_code == 0
+    assert "bigger than the GPU's memory" in result.output
+    assert "Fastest split: experts of 25 of 48 layers in RAM." in result.output
+    assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
+    assert len(load_results()) == 4 + 16
+
+
+def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
+    def out_of_memory(llama_bench, model, options, name=None):
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+
+    model = fake_run(monkeypatch, tmp_path, out_of_memory)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=40, experts=None, expert_share=0.0)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert result.exit_code == 1
+    assert "No split fit in GPU memory" in result.output
 
 
 def test_tune_without_llama_cpp(monkeypatch, tmp_path):
