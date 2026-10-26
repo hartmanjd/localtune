@@ -22,6 +22,7 @@ import json
 import re
 import struct
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -40,11 +41,23 @@ TOP = 100
 QUANTS = ["q2_K", "q3_K_M", "q4_0", "q4_K_M", "q5_K_M", "q6_K", "q8_0", "mxfp4", "fp16", "bf16"]
 
 
+# Ollama's servers sometimes take too long to answer one of the thousands of requests; trying
+# again a couple of times gets past that.
+
+
 def get(url: str, accept: str = "application/json"):
     request = urllib.request.Request(
         url, headers={"Accept": accept, "User-Agent": "localtune-model-table"}
     )
-    return urllib.request.urlopen(request, timeout=60)
+    for attempt in range(3):
+        try:
+            return urllib.request.urlopen(request, timeout=60)
+        except urllib.error.HTTPError:
+            raise
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(5)
 
 
 def get_json(url: str, accept: str = "application/json") -> dict:
@@ -272,14 +285,14 @@ def one_family(rank: int, entry: dict) -> tuple[list, list, list]:
                 model, size_files, note = one_size(
                     entry["family"], size, rank, entry["pulls"], tags, latest and latest["digest"]
                 )
-            except (urllib.error.URLError, KeyError, TypeError, ValueError) as e:
+            except (OSError, KeyError, TypeError, ValueError) as e:
                 model, size_files, note = None, [], f"{entry['family']}:{size}: {e}"
             if model:
                 models.append(model)
                 files.extend(size_files)
             if note:
                 notes.append(note)
-    except (urllib.error.URLError, KeyError, TypeError) as e:
+    except (OSError, KeyError, TypeError) as e:
         notes.append(f"{entry['family']}: {e}")
     print(f"#{rank} {entry['family']}: {len(models)} sizes")
     return models, files, notes
