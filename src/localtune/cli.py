@@ -333,7 +333,8 @@ def result_row(run: RunResult) -> list[str]:
 def settings_summary(settings: RunSettings) -> str:
     parts = []
     if settings.gpu_layers is not None:
-        parts.append(f"GPU layers {settings.gpu_layers}")
+        layers = "auto" if settings.gpu_layers < 0 else settings.gpu_layers
+        parts.append(f"GPU layers {layers}")
     if settings.cpu_moe_layers:
         parts.append(f"{settings.cpu_moe_layers} expert layers in RAM")
     if settings.kv_cache_k is not None:

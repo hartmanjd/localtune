@@ -250,6 +250,19 @@ def test_results_shows_saved_runs(monkeypatch, tmp_path):
     assert "GPU layers 99, KV f16" in result.output
 
 
+def test_results_shows_automatic_gpu_layers(monkeypatch, tmp_path):
+    # llama.cpp reports -1 GPU layers when it picks the number itself.
+    def automatic_layers(llama_bench, model, options):
+        output = EXAMPLE_RUN.replace('"n_gpu_layers": 99', '"n_gpu_layers": -1')
+        return parse_output(output, model, options.repetitions)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, automatic_layers)
+    runner.invoke(cli.app, ["run", str(model)])
+    result = runner.invoke(cli.app, ["results"])
+    assert "GPU layers auto" in result.output
+
+
 def test_results_lists_failed_runs(monkeypatch, tmp_path):
     def out_of_memory(llama_bench, model, options):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
