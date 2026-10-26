@@ -72,7 +72,16 @@ def build_command(llama_bench: str, model: Path, options: BenchOptions) -> list[
 # the decode test ("n_gen"), each with its average speed in tokens per second ("avg_ts") and the
 # settings it used, plus how long each repetition took ("samples_ns"), which together are the
 # time spent on the tokens. Time to first token is worked out from the prefill speed: the time
-# it takes to read the whole prompt before the first word of the answer can appear.
+# it takes to read the whole prompt before the first word of the answer can appear. The
+# quantization comes from llama-bench's description of the model.
+
+
+def quant_name(model_type: str) -> str:
+    # "qwen3 14B Q4_K - Medium" is the Q4_K_M everyone calls it; "IQ4_XS - 4.25 bpw" is IQ4_XS.
+    base, _, variant = model_type.partition(" - ")
+    quant = base.split()[-1]
+    sizes = {"Small": "S", "Medium": "M", "Large": "L"}
+    return f"{quant}_{sizes[variant]}" if variant in sizes else quant
 
 
 def parse_output(stdout: str, model: Path, repetitions: int) -> EngineRun:
@@ -89,7 +98,7 @@ def parse_output(stdout: str, model: Path, repetitions: int) -> EngineRun:
         engine_version=f"b{prefill['build_number']} ({prefill['build_commit']})",
         model=model.stem,
         model_file=model.name,
-        quant=prefill["model_type"].split()[-1],
+        quant=quant_name(prefill["model_type"]),
         context_size=prefill["n_prompt"] + decode["n_gen"],
         gpu_layers=prefill["n_gpu_layers"],
         cpu_moe_layers=prefill.get("n_cpu_moe"),

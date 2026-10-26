@@ -16,6 +16,20 @@ EXAMPLE = (Path(__file__).parent / "data" / "llama_bench.json").read_text()
 MODEL = Path("models/llama-2-7b.Q4_0.gguf")
 
 
+@pytest.mark.parametrize(
+    "model_type, quant",
+    [
+        ("qwen3 14B Q4_K - Medium", "Q4_K_M"),
+        ("llama 8B Q5_K - Small", "Q5_K_S"),
+        ("llama 7B Q4_0", "Q4_0"),
+        ("qwen3 8B IQ4_XS - 4.25 bpw", "IQ4_XS"),
+        ("gemma3 4B BF16", "BF16"),
+    ],
+)
+def test_reads_the_quantization_by_its_usual_name(model_type, quant):
+    assert llamacpp.quant_name(model_type) == quant
+
+
 def test_command_passes_only_the_settings_given():
     command = llamacpp.build_command("llama-bench", MODEL, BenchOptions(gpu_layers=99))
     assert command[:3] == ["llama-bench", "-m", str(MODEL)]
