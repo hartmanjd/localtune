@@ -98,8 +98,9 @@ def model_facts(entry: dict) -> dict:
 
 
 # File sizes on Hugging Face: find the GGUF copy made from the model's own repo (Hugging Face
-# tags every copy with the repo it came from), then read the size of each file in its file
-# list. Big models are split into several files per quantization; those are added up.
+# tags most copies with the repo they came from; model_list.csv names the copy for the few
+# that aren't tagged), then read the size of each file in its file list. Big models are split
+# into several files per quantization; those are added up.
 
 
 def find_gguf_repo(hf_repo: str) -> str | None:
@@ -183,7 +184,7 @@ def main() -> None:
     for entry in entries:
         try:
             models.append(model_facts(entry))
-            gguf_repo = find_gguf_repo(entry["hf_repo"])
+            gguf_repo = entry["gguf_repo"] or find_gguf_repo(entry["hf_repo"])
             if gguf_repo is None:
                 problems.append(f"{entry['name']}: no GGUF copy by {', '.join(GGUF_AUTHORS)}")
             else:
