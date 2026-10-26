@@ -52,6 +52,7 @@ from localtune.runners.llamacpp import (
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
 from localtune.tune import (
+    answer_seconds,
     combinations,
     describe,
     describe_split,
@@ -520,8 +521,7 @@ def find_split(model_file: Path, gpu: int, bench, tokens: int) -> dict | None:
         label = describe_split(on_gpu, layout)
         result = bench(split_settings(on_gpu, layout), f"Trying {label}")
         console.print(f"  Split: {label}: {outcome(result)}")
-        worked = result.status == "ok" and result.speed and result.speed.decode_tok_s
-        return result.speed.decode_tok_s if worked else None
+        return answer_seconds(result)
 
     best = find_best_split(try_split, guess, layout.layers)
     if best is None:
@@ -547,7 +547,9 @@ def outcome(result: RunResult) -> str:
     if result.status != "ok" or not result.speed:
         return f"[red]failed[/red] ({result.error})"
     speed = result.speed
-    return f"{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
+    seconds = answer_seconds(result)
+    answer = f"{seconds:,.1f} s per answer, " if seconds is not None else ""
+    return f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
 
 
 def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
@@ -562,15 +564,11 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
                 )
         return False
 
-    worked = sorted(
-        (run for run in runs if run.status == "ok" and run.speed and run.speed.decode_tok_s),
-        key=lambda run: run.speed.decode_tok_s,
-        reverse=True,
-    )
+    worked = sorted((run for run in runs if answer_seconds(run) is not None), key=answer_seconds)
     table = Table(title=f"{best.settings.model}, fastest first")
     for column in ("Flash attn", "KV cache", "Micro-batch"):
         table.add_column(column)
-    for column in ("Decode tok/s", "Prefill tok/s", "Peak VRAM"):
+    for column in ("Answer time", "Decode tok/s", "Prefill tok/s", "Peak VRAM"):
         table.add_column(column, justify="right")
     for run in worked:
         s, gpu = run.settings, run.gpu
@@ -578,6 +576,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
             "on" if s.flash_attention else "off",
             s.kv_cache_k or "",
             str(s.ubatch_size or ""),
+            f"{answer_seconds(run):,.1f} s",
             f"{run.speed.decode_tok_s:,.1f}",
             f"{run.speed.prefill_tok_s:,.0f}",
             f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
