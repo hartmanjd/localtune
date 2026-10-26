@@ -13,8 +13,11 @@
 # computer, and they are exactly the kind of data the prediction model learns from: the same
 # model and GPU with only the settings changed.
 
+import math
+from collections.abc import Callable
 from itertools import product
 
+from localtune.gguf import ModelLayout
 from localtune.results import RunResult
 
 ATTENTION_AND_CACHE = [(False, "f16"), (True, "f16"), (True, "q8_0"), (True, "q4_0")]
@@ -52,3 +55,68 @@ def run_flags(run: RunResult) -> str:
     s = run.settings
     flash = "--flash-attn" if s.flash_attention else "--no-flash-attn"
     return f"{flash} --kv-cache {s.kv_cache_k} --ubatch-size {s.ubatch_size}"
+
+
+# Models bigger than the GPU. llama.cpp can keep part of a model in the computer's normal
+# memory (RAM) and run that part on the CPU, which is much slower, so the more of the model
+# fits on the GPU the faster it writes, until the GPU runs out of memory (or, on Windows, starts
+# borrowing slow RAM by itself, which makes it slower again). There are two ways to split it:
+#   - an ordinary model is split by layers: the first layers on the GPU, the rest on the CPU;
+#   - a mixture-of-experts model keeps every layer on the GPU but moves the experts of some
+#     layers to RAM. Each word only uses a few experts, so this is much faster than moving
+#     whole layers, and it is how these models are usually run on home GPUs.
+# Either way the choice is one number: how many layers' worth of weights are on the GPU.
+# tune.py makes a first guess from the file size and the GPU's memory, then tries one more
+# and one fewer, keeping the fastest, so only a handful of runs are needed.
+
+RESERVED_GB = 1.5  # left free for the desktop, the KV cache and llama.cpp's working memory
+
+
+def split_settings(on_gpu: int, layout: ModelLayout) -> dict:
+    if layout.experts:
+        return {"gpu_layers": layout.layers + 1, "cpu_moe_layers": layout.layers - on_gpu}
+    return {"gpu_layers": on_gpu}
+
+
+def describe_split(on_gpu: int, layout: ModelLayout) -> str:
+    if layout.experts:
+        return f"experts of {layout.layers - on_gpu} of {layout.layers} layers in RAM"
+    return f"{on_gpu} of {layout.layers} layers on the GPU"
+
+
+def first_guess(file_bytes: int, layout: ModelLayout, vram_gb: float) -> int | None:
+    """How many layers' weights should fit on the GPU, or None if the whole model fits."""
+    usable = (vram_gb - RESERVED_GB) * 1024**3
+    if file_bytes <= usable:
+        return None
+    if layout.experts and layout.expert_share:
+        experts_per_layer = file_bytes * layout.expert_share / layout.layers
+        moved = math.ceil((file_bytes - usable) / experts_per_layer)
+        return max(0, layout.layers - moved)
+    per_layer = file_bytes / (layout.layers + 1)  # the output layer is about one more
+    return max(0, min(layout.layers, int(usable // per_layer) - 1))
+
+
+def find_best_split(
+    try_split: Callable[[int], float | None], start: int, layers: int, max_tries: int = 12
+) -> int | None:
+    """Tries splits around the first guess; try_split gives a split's speed, or None on failure."""
+    speeds: dict[int, float | None] = {}
+
+    def speed(on_gpu: int) -> float | None:
+        if on_gpu not in speeds:
+            speeds[on_gpu] = try_split(on_gpu)
+        return speeds[on_gpu]
+
+    on_gpu = start
+    while speed(on_gpu) is None:
+        if on_gpu == 0 or len(speeds) >= max_tries:
+            return None
+        on_gpu = max(0, on_gpu - 2)
+    for step in (1, -1):
+        while 0 <= on_gpu + step <= layers and len(speeds) < max_tries:
+            faster = speed(on_gpu + step)
+            if faster is None or faster <= speeds[on_gpu]:
+                break
+            on_gpu += step
+    return on_gpu
