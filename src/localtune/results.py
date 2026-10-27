@@ -229,3 +229,25 @@ def load_results(path: Path | None = None) -> list[RunResult]:
         except (json.JSONDecodeError, ValidationError):
             continue
     return results
+
+
+# Every run as one flat row, for spreadsheets and data tools like pandas: each group's fields
+# become columns named group.field (speed.decode_tok_s, settings.kv_cache_k, ...). Only the GPU
+# that ran it is kept from the computer's list of GPUs, so each row has one GPU.
+
+
+def flat_record(run: RunResult) -> dict:
+    data = run.model_dump(mode="json")
+    gpus = data["hardware"].pop("gpus")
+    data["hardware"]["gpu"] = next((g for g in gpus if g["index"] == run.gpu_index), None)
+    return flatten(data)
+
+
+def flatten(data: dict, prefix: str = "") -> dict:
+    flat = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            flat.update(flatten(value, f"{prefix}{key}."))
+        else:
+            flat[f"{prefix}{key}"] = value
+    return flat
