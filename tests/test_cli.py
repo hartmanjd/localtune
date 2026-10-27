@@ -212,6 +212,25 @@ def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
     assert load_results()[0].speed.decode_tok_s == 133.2
 
 
+def test_run_tests_the_lengths_of_a_use(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    runner.invoke(cli.app, ["run", str(model), "--use", "code", "--gen-tokens", "64"])
+    assert (asked[0].prompt_tokens, asked[0].gen_tokens) == (8000, 64)
+
+
+def test_run_refuses_an_unknown_use(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["run", str(model), "--use", "poems"])
+    assert result.exit_code == 1
+    assert "Unknown use poems" in result.output
+
+
 def test_run_warns_when_another_program_is_using_the_gpu(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, example_run)
     busy = GpuSample(time_s=0, power_w=None, vram_used_gb=9.3, utilization_pct=0, temperature_c=50)
@@ -532,6 +551,9 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert f"localtune run {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
     assert "Trying 13 combinations" in result.output
+    result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
+    assert f"localtune run {model} --use documents --gpu-layers" in result.output
+    assert asked[-1].prompt_tokens == 16000
 
 
 def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
