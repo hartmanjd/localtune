@@ -30,6 +30,15 @@ def test_quantized_kv_caches_are_only_tried_with_flash_attention():
             assert combo["flash_attention"]
 
 
+def test_long_prompts_try_flash_attention_off_only_once_and_last():
+    combos = combinations(prompt_tokens=16000)
+    assert len(combos) == 13
+    flash_off = [c for c in combos if not c["flash_attention"]]
+    assert flash_off == [{"flash_attention": False, "kv_cache": "f16", "ubatch_size": 512}]
+    assert combos[-1] == flash_off[0]
+    assert len(combinations(prompt_tokens=4095)) == 16
+
+
 def a_run(decode, status="ok", prefill=5000.0, **settings):
     price = ElectricityPrice(per_kwh=0.2, currency="USD", kind="yours", source="you")
     return RunResult(

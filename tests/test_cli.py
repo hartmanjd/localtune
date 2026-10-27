@@ -504,6 +504,7 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert "a 16,128-token conversation don't fit" in result.output
     assert f"localtune run {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
+    assert "Trying 13 combinations" in result.output
 
 
 def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
