@@ -30,6 +30,7 @@ from rich.progress import (
 from rich.table import Table
 
 from localtune import __version__
+from localtune.animations import play
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
@@ -76,13 +77,23 @@ from localtune.tune import (
 )
 from localtune.uses import USES, UnknownUseError, token_lengths
 
-app = typer.Typer(no_args_is_help=True)
+app = typer.Typer()
 console = Console()
 
 
-@app.callback()
-def main() -> None:
-    """Benchmark local LLMs on your own hardware."""
+# "localtune" on its own plays the logo (animations.py) and lists the commands. Each command
+# below opens with its own short scene before it starts working.
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Benchmark local LLMs on your own hardware.
+
+    Set LOCALTUNE_NO_ANIMATION=1 to turn off the short animations commands open with.
+    """
+    if ctx.invoked_subcommand is None:
+        play(console, "logo")
+        console.print(ctx.get_help(), markup=False, highlight=False)
 
 
 # "localtune info": shows what localtune can see about this computer, the same details that
@@ -140,6 +151,7 @@ def doctor(
     ),
 ) -> None:
     """Check that this computer is ready to benchmark, and what to fix if not."""
+    play(console, "doctor")
     checks = run_checks()
     show_checks(checks)
 
@@ -269,6 +281,7 @@ def run(
     ),
 ) -> None:
     """Benchmark a model with llama.cpp or a local AI server, and save the result."""
+    play(console, "run")
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     if backend not in BACKENDS:
         console.print(f"Unknown backend {backend}. Choose from: {', '.join(BACKENDS)}")
@@ -510,6 +523,7 @@ def tune(
     ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
+    play(console, "tune")
     given_prompt, given_gen = prompt_tokens, gen_tokens
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
@@ -873,6 +887,7 @@ def sweep(
     ),
 ) -> None:
     """Benchmark many models one after another, like every model you have in Ollama."""
+    play(console, "sweep")
     lengths = {name: lengths_for(name, None, None) for name in use or USES}
     llama_bench = find_tool("llama-bench")
     if llama_bench is None:
