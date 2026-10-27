@@ -56,8 +56,8 @@ def stack(rows: list[Text]) -> Text:
 
 # The logo: "localtune" in small ASCII lettering, four rows high, about four seconds long. Every
 # piece starts as a random dim stroke and snaps into place at its own moment, roughly left to
-# right; then a light shimmer sweeps across the finished word, back, and across again, and it
-# ends with a small glint at the tip of the last letter.
+# right; then a light shimmer sweeps across the finished word and back, a second one chases off
+# to the right before it's back, and it ends with a small glint at the tip of the last letter.
 
 LOGO = [
     r" _              _ _                 ",
@@ -69,7 +69,10 @@ WIDTH = len(LOGO[0])
 STROKES = "/\\|_-.'`"
 BUILD_FRAMES = 32
 SHIMMER_FRAMES = 12
-SHIMMERS = 3
+# Each shimmer as (when it starts, after the build; whether it runs to the right): across, back,
+# and halfway back a second one chases off to the right.
+SHIMMERS = [(0, True), (SHIMMER_FRAMES, False), (SHIMMER_FRAMES * 3 // 2, True)]
+SHIMMER_END = SHIMMER_FRAMES * 5 // 2
 SHINE = 0.3
 # The glint, one drawing per moment, as (row, column, character) just off the tip of the "e":
 # a point of light that flares into a small cross and fades.
@@ -85,18 +88,20 @@ HOLD_FRAMES = 4
 
 
 def shine(frame: int, column: int) -> bool:
-    """Whether the shimmer is passing over this column of the logo at this frame."""
+    """Whether a shimmer is passing over this column of the logo at this frame."""
     into = frame - BUILD_FRAMES
-    if not 0 <= into < SHIMMERS * SHIMMER_FRAMES:
-        return False
-    sweep, step = divmod(into, SHIMMER_FRAMES)
-    position = column / WIDTH if sweep % 2 == 0 else 1 - column / WIDTH
-    head = (step + 1) / SHIMMER_FRAMES * (1 + SHINE)
-    return head - SHINE <= position < head
+    for start, rightward in SHIMMERS:
+        step = into - start
+        if 0 <= step < SHIMMER_FRAMES:
+            position = column / WIDTH if rightward else 1 - column / WIDTH
+            head = (step + 1) / SHIMMER_FRAMES * (1 + SHINE)
+            if head - SHINE <= position < head:
+                return True
+    return False
 
 
 def glint(frame: int) -> dict[tuple[int, int], str]:
-    into = frame - BUILD_FRAMES - SHIMMERS * SHIMMER_FRAMES
+    into = frame - BUILD_FRAMES - SHIMMER_END
     if not 0 <= into < len(GLINT) * GLINT_FRAMES:
         return {}
     row, column = TIP
@@ -132,7 +137,7 @@ def logo_scene(seed: int | None = None) -> list[Text]:
         for column, char in enumerate(line)
         if char != " "
     }
-    frames = BUILD_FRAMES + SHIMMERS * SHIMMER_FRAMES + len(GLINT) * GLINT_FRAMES + HOLD_FRAMES
+    frames = BUILD_FRAMES + SHIMMER_END + len(GLINT) * GLINT_FRAMES + HOLD_FRAMES
     return [logo_frame(frame, lands, rng) for frame in range(frames)]
 
 
