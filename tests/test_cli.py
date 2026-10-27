@@ -752,3 +752,9 @@ def test_a_tuning_sweep_moves_on_when_nothing_fits(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert result.output.count("moving on") == 2
     assert "nothing worked" in result.output
+
+
+def test_localtune_on_its_own_lists_the_commands():
+    result = runner.invoke(cli.app, [])
+    assert result.exit_code == 0
+    assert "sweep" in result.output and "LOCALTUNE_NO_ANIMATION" in result.output

@@ -30,6 +30,7 @@ from rich.progress import (
 from rich.table import Table
 
 from localtune import __version__
+from localtune.animations import play_logo, working
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
@@ -76,13 +77,23 @@ from localtune.tune import (
 )
 from localtune.uses import USES, UnknownUseError, token_lengths
 
-app = typer.Typer(no_args_is_help=True)
+app = typer.Typer()
 console = Console()
 
 
-@app.callback()
-def main() -> None:
-    """Benchmark local LLMs on your own hardware."""
+# "localtune" on its own plays the logo (animations.py) and lists the commands. While the
+# commands below work, a small loading animation runs beside what they're doing.
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Benchmark local LLMs on your own hardware.
+
+    Set LOCALTUNE_NO_ANIMATION=1 to turn off the logo and loading animations.
+    """
+    if ctx.invoked_subcommand is None:
+        play_logo(console)
+        console.print(ctx.get_help(), markup=False, highlight=False)
 
 
 # "localtune info": shows what localtune can see about this computer, the same details that
@@ -140,7 +151,8 @@ def doctor(
     ),
 ) -> None:
     """Check that this computer is ready to benchmark, and what to fix if not."""
-    checks = run_checks()
+    with working(console, "doctor", "Checking this computer..."):
+        checks = run_checks()
     show_checks(checks)
 
     if needs_llama_cpp(checks) and offer_llama_cpp(ask=not install):
@@ -320,7 +332,7 @@ def run(
         label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    with console.status(label):
+    with working(console, "run", label):
         result = measure(
             engine, requested, electricity, repetitions, gpu_index=gpu, background=background
         )
@@ -606,7 +618,9 @@ def tune_model(
     tune_id = uuid4().hex
     session.placements = {cache: session.given for cache in KV_CACHE_SIZE}
 
-    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
+    def bench(
+        settings: dict, label: str, placement: dict | None = None, progress: float | None = None
+    ) -> RunResult:
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -617,7 +631,7 @@ def tune_model(
         )
         engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
         requested = requested_settings(model_file, options, model_name)
-        with console.status(label):
+        with working(console, "tune", label, progress):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
         result.tune_id, result.sweep_id = tune_id, sweep_id
         save_result(result)
@@ -636,7 +650,8 @@ def tune_model(
     for number, settings in enumerate(combos, 1):
         left = time_left(time.monotonic() - started, number - 1, len(combos))
         label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
-        result = bench(settings, label, session.placements[settings["kv_cache"]])
+        progress = (number - 1) / len(combos)
+        result = bench(settings, label, session.placements[settings["kv_cache"]], progress)
         session.runs.append(result)
         console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
 
@@ -916,7 +931,8 @@ def sweep(
                 engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
                 requested = requested_settings(model_file, options, model_name)
                 left = time_left(time.monotonic() - started, done, planned)
-                with console.status(f"Run {done + 1} of {planned}: {model}, {use_name}{left}"):
+                label = f"Run {done + 1} of {planned}: {model}, {use_name}{left}"
+                with working(console, "sweep", label, done / planned):
                     result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
                 result.sweep_id = sweep_id
                 save_result(result)
