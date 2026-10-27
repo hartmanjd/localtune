@@ -31,6 +31,7 @@ from rich.table import Table
 
 from localtune import __version__
 from localtune.animations import play_logo, working
+from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
@@ -82,7 +83,10 @@ console = Console()
 
 
 # "localtune" on its own plays the logo (animations.py) and lists the commands. While the
-# commands below work, a small loading animation runs beside what they're doing.
+# commands below work, a small loading animation runs beside what they're doing. The commands
+# that benchmark keep the computer from going to sleep until they end (awake.py).
+
+BENCHMARK_COMMANDS = {"run", "tune", "sweep"}
 
 
 @app.callback(invoke_without_command=True)
@@ -91,6 +95,8 @@ def main(ctx: typer.Context) -> None:
 
     Set LOCALTUNE_NO_ANIMATION=1 to turn off the logo and loading animations.
     """
+    if ctx.invoked_subcommand in BENCHMARK_COMMANDS:
+        ctx.with_resource(keep_awake())
     if ctx.invoked_subcommand is None:
         play_logo(console)
         console.print(ctx.get_help(), markup=False, highlight=False)
