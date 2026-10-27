@@ -212,6 +212,18 @@ def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
     assert load_results()[0].speed.decode_tok_s == 133.2
 
 
+def test_run_warns_when_another_program_is_using_the_gpu(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    busy = GpuSample(time_s=0, power_w=None, vram_used_gb=9.3, utilization_pct=0, temperature_c=50)
+    monkeypatch.setattr(cli, "find_nvidia_smi", lambda: Path("nvidia-smi"))
+    monkeypatch.setattr(cli, "other_use", lambda reader: busy)
+    wide_terminal(monkeypatch)
+    result = runner.invoke(cli.app, ["run", str(model)])
+    assert "9.3 GB of the GPU's memory is already in use" in result.output
+    assert "ollama stop" in result.output
+    assert result.exit_code == 0 and len(load_results()) == 1
+
+
 def test_run_saves_a_failed_run(monkeypatch, tmp_path):
     def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")

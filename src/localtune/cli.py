@@ -29,9 +29,9 @@ from localtune import __version__
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
-from localtune.gpu_monitor import GpuMonitor
+from localtune.gpu_monitor import GpuMonitor, busy_reason, other_use, read_sample
 from localtune.gpus import find_gpu_spec
-from localtune.hardware import detect_hardware
+from localtune.hardware import detect_hardware, find_nvidia_smi
 from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
@@ -283,6 +283,7 @@ def run(
         label = f"Benchmarking {model_name} in {server.name} at {server.url}..."
     else:
         llama_bench, model_file, model_name = prepare_llama_cpp(model, kv_cache)
+        warn_if_gpu_busy(gpu)
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -312,6 +313,25 @@ def run(
         raise typer.Exit(1)
     show_run(result)
     console.print(f"Saved to {path}")
+
+
+# Before llama.cpp benchmarks anything, a quick look at whether another program is already using
+# the GPU (gpu_monitor.py), since that makes every result slower than it should be. It only
+# warns: the person may have a good reason, and the run still goes ahead.
+
+
+def warn_if_gpu_busy(gpu: int) -> None:
+    nvidia_smi = find_nvidia_smi()
+    if nvidia_smi is None:
+        return
+    reason = busy_reason(other_use(lambda: read_sample(nvidia_smi, gpu)))
+    if reason:
+        console.print(
+            f"[yellow]Heads-up: {reason}.[/yellow] Another program is using the GPU (like a "
+            "game, a video or video call, or Ollama keeping a model loaded), so these results "
+            "may be slower than they should be. For trustworthy numbers, close it first. "
+            "'ollama ps' shows a model Ollama has loaded, and 'ollama stop MODEL' frees it."
+        )
 
 
 # For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which
@@ -447,6 +467,7 @@ def tune(
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
+    warn_if_gpu_busy(gpu)
     name = model_name or model_file.name
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     tune_id, started = uuid4().hex, time.monotonic()
