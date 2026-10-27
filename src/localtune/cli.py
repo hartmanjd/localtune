@@ -2,12 +2,13 @@
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
 # "localtune predict", "localtune run", "localtune tune", "localtune sweep",
-# "localtune results" and "localtune monitor") starts here.
+# "localtune results", "localtune share" and "localtune monitor") starts here.
 # This file only handles the conversation with the person: it asks other modules for the
 # actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
 # benchmarks, predict.py for estimates before a model is downloaded, tune.py for the settings
-# tuning tries, uses.py for the prompt lengths of a use) and shows the answers.
+# tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs) and shows the
+# answers.
 
 import sys
 import time
@@ -60,6 +61,15 @@ from localtune.runners.llamacpp import (
 )
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
+from localtune.share import (
+    ShareError,
+    mark_shared,
+    not_yet_shared,
+    payload,
+    send,
+    share_url,
+    write_preview,
+)
 from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
@@ -1227,6 +1237,57 @@ def settings_summary(settings: RunSettings) -> str:
     if settings.flash_attention is not None:
         parts.append("flash attn " + ("on" if settings.flash_attention else "off"))
     return ", ".join(parts) or "defaults"
+
+
+# "localtune share": offers the saved runs not shared yet to localtune's public dataset
+# (share.py). It writes exactly what would be sent to a file, shows a summary and one run in
+# full, and sends only after a yes. Nothing is sent without an address to send to.
+
+
+@app.command()
+def share(
+    to: str | None = typer.Option(
+        None, help="The address to send the runs to (or set LOCALTUNE_SHARE_URL)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Send without asking first."),
+) -> None:
+    """Share your saved runs with localtune's public dataset, after showing what is sent."""
+    runs = not_yet_shared(load_results())
+    if not runs:
+        console.print("No new runs to share.")
+        return
+    body = payload(runs)
+    path = write_preview(body)
+
+    summary = Table(title="What would be shared", show_header=False)
+    summary.add_row("Runs", str(len(runs)))
+    summary.add_row("Models", ", ".join(sorted({r.settings.model for r in runs})))
+    summary.add_row("GPUs", ", ".join(sorted({g.name for r in runs for g in r.hardware.gpus})))
+    summary.add_row("This computer's ID", f"{runs[0].rig_id} (random, made by localtune)")
+    console.print(summary)
+    console.print("Each run looks like this one:")
+    console.print_json(data=body["runs"][-1])
+    console.print(
+        "Left out: error messages (they can show folder names), your electricity price and "
+        "zip code, and the time of day. Never saved at all: your name, your computer's name, "
+        "your IP address and prompts."
+    )
+    console.print(f"Everything that would be sent is in {path}")
+
+    url = share_url(to)
+    if url is None:
+        console.print("localtune's server for shared runs isn't running yet, so nothing was sent.")
+        return
+    if not yes and not typer.confirm(f"Send these {len(runs)} runs to {url}?", default=False):
+        console.print("Nothing was sent.")
+        return
+    try:
+        send(url, body)
+    except ShareError as error:
+        console.print(f"Nothing was sent: {error}", markup=False)
+        raise typer.Exit(1) from error
+    mark_shared(runs)
+    console.print(f"Shared {len(runs)} runs. Thank you!")
 
 
 # "localtune monitor": watches the GPU for a few seconds and shows what it used and what that
