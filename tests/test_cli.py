@@ -564,6 +564,48 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert asked[-1].prompt_tokens == 16000
 
 
+def test_tune_gives_a_smaller_kv_cache_its_own_split(monkeypatch, tmp_path):
+    # A mixture-of-experts model beside a 16,000-token conversation: with an f16 cache only 15
+    # of its 48 layers' experts fit on the GPU, but a q8_0 cache is half the size and leaves
+    # room for all of them, which makes it the fastest.
+    budget, cache_size = 18000, {"f16": 1.0, "q8_0": 34 / 64, "q4_0": 18 / 64}
+
+    def memory_run(llama_bench, model, options, name=None):
+        cache = options.kv_cache or "f16"
+        on_gpu = 48 - (options.cpu_moe_layers or 0)
+        if on_gpu * 90 + 480 + 16128 * cache_size[cache] > budget:
+            raise BackendError("cudaMalloc failed", status="out_of_memory")
+        run = example_run(llama_bench, model, options, name)
+        run.settings.flash_attention = options.flash_attention
+        run.settings.kv_cache_k = run.settings.kv_cache_v = cache
+        run.settings.ubatch_size = options.ubatch_size
+        run.settings.cpu_moe_layers = options.cpu_moe_layers
+        run.speed.decode_tok_s = (
+            100 - (options.cpu_moe_layers or 0) + (options.ubatch_size or 0) / 256
+        )
+        return run
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, memory_run)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=48, experts=128, expert_share=0.9, kv_bytes_per_token=1)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + budget / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
+    assert result.exit_code == 0
+    assert "Fastest split: experts of 33 of 48 layers in RAM." in result.output
+    assert "Finding its split too." in result.output
+    assert "Fastest split with a q8_0 KV cache: the whole model on the GPU." in result.output
+    assert "experts of 33 layers in RAM" in result.output  # the table's split column
+    assert "whole model on the GPU" in result.output
+    assert "--use documents --gpu-layers 49 --cpu-moe 0 --flash-attn --kv-cache q8_0" in (
+        result.output
+    )
+
+
 def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
     def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
