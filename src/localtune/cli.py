@@ -49,7 +49,7 @@ from localtune.install import (
 )
 from localtune.models import find_model
 from localtune.ollama_models import downloaded_models, find_ollama_model
-from localtune.predict import Prediction, predict
+from localtune.predict import Prediction, estimate_for, predict
 from localtune.prices import find_price
 from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
 from localtune.runners.base import measure
@@ -553,6 +553,9 @@ def show_run(result: RunResult) -> None:
         table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
     if speed.decode_tok_s is not None:
         table.add_row("Decode", f"{speed.decode_tok_s:,.1f} tok/s")
+        estimate = estimate_for(result)
+        if estimate is not None:
+            table.add_row("Decode estimate", f"{estimate:,.0f} tok/s (from 'localtune predict')")
     if speed.ttft_ms is not None:
         table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
     if gpu is not None:
@@ -896,6 +899,9 @@ def show_tune(
             f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
         )
     console.print(table)
+    estimate = estimate_for(best)
+    if estimate is not None:
+        console.print(f"'localtune predict' estimated about {estimate:,.0f} tok/s decode.")
 
     s = best.settings
     winner = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
@@ -1149,19 +1155,21 @@ def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
     table = Table(title="Sweep results")
     for column in ("Model", "Use"):
         table.add_column(column)
-    for column in ("Answer time", "Decode tok/s", "Prefill tok/s", "Peak VRAM"):
+    for column in ("Answer time", "Decode tok/s", "Estimate", "Prefill tok/s", "Peak VRAM"):
         table.add_column(column, justify="right")
     for use_name, run in runs:
         seconds, speed, gpu = answer_seconds(run), run.speed, run.gpu
         if seconds is None:
             failed = "out of GPU memory" if run.status == "out_of_memory" else "failed"
-            table.add_row(run.settings.model, use_name, failed, "", "", "")
+            table.add_row(run.settings.model, use_name, failed, "", "", "", "")
             continue
+        estimate = estimate_for(run)
         table.add_row(
             run.settings.model,
             use_name,
             f"{seconds:,.1f} s",
             f"{speed.decode_tok_s:,.1f}",
+            f"{estimate:,.0f}" if estimate is not None else "",
             f"{speed.prefill_tok_s:,.0f}",
             f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
         )
@@ -1193,7 +1201,7 @@ def results(
     table.add_column("Engine")
     for column in ("Quant", "Settings", "Result"):
         table.add_column(column)
-    for column in ("Prefill tok/s", "Decode tok/s", "Peak VRAM", "Cost/1M tok"):
+    for column in ("Prefill tok/s", "Decode tok/s", "Estimate", "Peak VRAM", "Cost/1M tok"):
         table.add_column(column, justify="right")
     for run in shown:
         table.add_row(*result_row(run))
@@ -1220,6 +1228,7 @@ def result_row(run: RunResult) -> list[str]:
         RESULT_LABELS[run.status],
         f"{speed.prefill_tok_s:,.0f}" if speed and speed.prefill_tok_s else "",
         f"{speed.decode_tok_s:,.1f}" if speed and speed.decode_tok_s else "",
+        f"{estimate:,.0f}" if (estimate := estimate_for(run)) is not None else "",
         f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
         f"{cost:.3f} {energy.price.currency}" if cost is not None else "",
     ]
