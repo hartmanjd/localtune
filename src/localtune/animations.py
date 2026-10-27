@@ -54,9 +54,10 @@ def stack(rows: list[Text]) -> Text:
     return Text("\n").join(rows)
 
 
-# The logo: "localtune" in small ASCII lettering, four rows high, assembling itself over about
-# two seconds. Every piece starts as a random dim stroke and snaps into place at its own moment,
-# roughly left to right, then a light shimmer runs across the finished word.
+# The logo: "localtune" in small ASCII lettering, four rows high, about four seconds long. Every
+# piece starts as a random dim stroke and snaps into place at its own moment, roughly left to
+# right; then a light shimmer runs across the finished word twice, and it ends with a spark
+# bursting off the last letter.
 
 LOGO = [
     r" _              _ _                 ",
@@ -67,25 +68,50 @@ LOGO = [
 WIDTH = len(LOGO[0])
 STROKES = "/\\|_-.'`"
 BUILD_FRAMES = 32
-SHIMMER_FRAMES = 12
+SHIMMER_FRAMES = 14
+SHIMMERS = 2
+SHINE = 0.3
+# The spark, one drawing per moment: a point of light that bursts, spreads and fades.
+SPARK = [
+    ["         ", "    *    ", "         ", "         "],
+    ["   \\|/   ", "  --*--  ", "   /|\\   ", "         "],
+    [" \\  |  / ", "--- * ---", " /  |  \\ ", "         "],
+    [".   '   .", "'   +   '", "'   .   '", "         "],
+    ["         ", "    .    ", "         ", "         "],
+]
+SPARK_FRAMES = 3
+HOLD_FRAMES = 5
+
+
+def shine(frame: int, column: int) -> bool:
+    """Whether the shimmer is passing over this column of the logo at this frame."""
+    into = frame - BUILD_FRAMES
+    if not 0 <= into < SHIMMERS * SHIMMER_FRAMES:
+        return False
+    head = (into % SHIMMER_FRAMES + 1) / SHIMMER_FRAMES * (1 + SHINE)
+    return head - SHINE <= column / WIDTH < head
 
 
 def logo_frame(frame: int, lands: dict[tuple[int, int], int], rng: random.Random) -> Text:
+    sparking = frame - BUILD_FRAMES - SHIMMERS * SHIMMER_FRAMES
+    spark = SPARK[sparking // SPARK_FRAMES] if 0 <= sparking < len(SPARK) * SPARK_FRAMES else None
+    flash = spark is SPARK[1]
     rows = []
     for number, line in enumerate(LOGO):
         row = Text()
         for column, char in enumerate(line):
             land = lands.get((number, column))
-            if land is None:
-                row.append(" ")
-            elif frame < land - 6:
+            if land is None or frame < land - 6:
                 row.append(" ")
             elif frame < land:
                 row.append(rng.choice(STROKES), style=PURPLES[0])
             else:
-                shimmer = (frame - BUILD_FRAMES) / SHIMMER_FRAMES - column / WIDTH
-                shade = PURPLES[-1] if 0 <= shimmer < 0.25 else purple(column / WIDTH / 2 + 0.3)
+                bright = flash or shine(frame, column)
+                shade = PURPLES[-1] if bright else purple(column / WIDTH / 2 + 0.3)
                 row.append(char, style=f"bold {shade}")
+        if spark:
+            for char in spark[number]:
+                row.append(char, style="bold #ffffff" if char in "*+" else f"bold {PURPLES[-1]}")
         rows.append(row)
     return stack(rows)
 
@@ -98,7 +124,8 @@ def logo_scene(seed: int | None = None) -> list[Text]:
         for column, char in enumerate(line)
         if char != " "
     }
-    return [logo_frame(frame, lands, rng) for frame in range(BUILD_FRAMES + SHIMMER_FRAMES)]
+    frames = BUILD_FRAMES + SHIMMERS * SHIMMER_FRAMES + len(SPARK) * SPARK_FRAMES + HOLD_FRAMES
+    return [logo_frame(frame, lands, rng) for frame in range(frames)]
 
 
 # The loading animations. Each one draws a frame for how long the step has been running and,
@@ -212,7 +239,7 @@ def run_loader(seconds: float, progress: float | None) -> list[Text]:
     return rows
 
 
-# Doctor: a heartbeat line scrolling past.
+# Doctor: a heartbeat line scrolling past, its shades of purple drifting along it.
 
 BEAT = [
     r"     /\     ",
@@ -226,7 +253,10 @@ def doctor_loader(seconds: float, progress: float | None) -> list[Text]:
     rows = []
     for line in BEAT:
         looped = (line * 3)[shift : shift + TRACK + 4]
-        rows.append(Text(looped, style="bold #ff5f87").append("  "))
+        row = Text()
+        for column, char in enumerate(looped):
+            row.append(char, style=f"bold {purple(column / TRACK / 2 + seconds / 2)}")
+        rows.append(row.append("  "))
     return rows
 
 

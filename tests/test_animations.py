@@ -23,7 +23,7 @@ def shown(console: Console) -> str:
 def test_the_logo_spells_localtune_in_four_even_rows_and_assembles_itself():
     assert len(LOGO) == 4 and len({len(row) for row in LOGO}) == 1
     frames = logo_scene(seed=1)
-    assert 30 <= len(frames) <= 50
+    assert 70 <= len(frames) <= 90
     assert frames[0].plain.count(" ") > frames[-1].plain.count(" ")
     assert frames[-1].plain.splitlines() == LOGO
 
