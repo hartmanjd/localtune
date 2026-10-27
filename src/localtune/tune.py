@@ -153,24 +153,33 @@ def server_flags(
 
 RESERVED_GB = 1.5  # left free for the desktop, the KV cache and llama.cpp's working memory
 
+# How big each KV cache type is compared with f16: q8_0 stores 32 numbers in 34 bytes and q4_0
+# in 18, where f16 takes 64. A smaller cache leaves room for more of the model on the GPU, so
+# with a long conversation each cache type gets its own split (cli.py), instead of all of them
+# being tried on the split that suits f16.
+KV_CACHE_SIZE = {"f16": 1.0, "q8_0": 34 / 64, "q4_0": 18 / 64}
+
 
 def split_settings(on_gpu: int, layout: ModelLayout) -> dict:
     if layout.experts:
         return {"gpu_layers": layout.layers + 1, "cpu_moe_layers": layout.layers - on_gpu}
-    return {"gpu_layers": on_gpu}
+    return {"gpu_layers": on_gpu + 1 if on_gpu >= layout.layers else on_gpu}  # + output layer
 
 
 def describe_split(on_gpu: int, layout: ModelLayout) -> str:
+    if on_gpu >= layout.layers:
+        return "the whole model on the GPU"
     if layout.experts:
         return f"experts of {layout.layers - on_gpu} of {layout.layers} layers in RAM"
     return f"{on_gpu} of {layout.layers} layers on the GPU"
 
 
 def first_guess(
-    file_bytes: int, layout: ModelLayout, vram_gb: float, context: int = 0
+    file_bytes: int, layout: ModelLayout, vram_gb: float, context: int = 0, kv_cache: str = "f16"
 ) -> int | None:
     """How many layers' weights should fit on the GPU, or None if the whole model fits."""
-    usable = (vram_gb - RESERVED_GB) * 1024**3 - context * layout.kv_bytes_per_token
+    kv_bytes = context * layout.kv_bytes_per_token * KV_CACHE_SIZE[kv_cache]
+    usable = (vram_gb - RESERVED_GB) * 1024**3 - kv_bytes
     if file_bytes <= usable:
         return None
     if layout.experts and layout.expert_share:

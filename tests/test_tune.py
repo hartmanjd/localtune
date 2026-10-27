@@ -152,6 +152,20 @@ def test_a_long_conversation_leaves_less_room_for_the_model():
     assert first_guess(12 * GB, layout, vram_gb=16, context=4096) == 34
 
 
+def test_all_layers_on_the_gpu_includes_the_output_layer():
+    assert split_settings(40, DENSE) == {"gpu_layers": 41}
+    assert describe_split(40, DENSE) == "the whole model on the GPU"
+    assert describe_split(48, MOE) == "the whole model on the GPU"
+
+
+def test_a_smaller_kv_cache_leaves_room_for_more_of_the_model():
+    layout = ModelLayout(layers=40, experts=None, expert_share=0.0, kv_bytes_per_token=98304)
+    f16 = first_guess(16 * GB, layout, vram_gb=16, context=16000)
+    q8 = first_guess(16 * GB, layout, vram_gb=16, context=16000, kv_cache="q8_0")
+    q4 = first_guess(16 * GB, layout, vram_gb=16, context=16000, kv_cache="q4_0")
+    assert f16 < q8 < q4
+
+
 def test_first_guess_never_goes_below_nothing_on_the_gpu():
     assert first_guess(500 * GB, DENSE, vram_gb=8) == 0
     assert first_guess(500 * GB, MOE, vram_gb=8) == 0
