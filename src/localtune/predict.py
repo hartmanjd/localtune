@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from localtune.gpus import GpuSpec
 from localtune.models import ModelFile, ModelSpec
+from localtune.results import ModelFacts, RunResult
 from localtune.tune import RESERVED_GB
 
 GIB = 1024**3
@@ -56,12 +57,16 @@ class Prediction(BaseModel):
 # is more than they really need.
 
 
-def kv_bytes_per_token(model: ModelSpec) -> int:
+def kv_bytes_per_token(model: ModelSpec | ModelFacts) -> int:
     return model.layers * model.kv_heads * model.head_dim * 2 * 2
 
 
 def predict(
-    model: ModelSpec, file: ModelFile, gpu: GpuSpec, tokens: int, ram_gb: float | None = None
+    model: ModelSpec | ModelFacts,
+    file: ModelFile,
+    gpu: GpuSpec,
+    tokens: int,
+    ram_gb: float | None = None,
 ) -> Prediction:
     conversation = tokens * kv_bytes_per_token(model)
     usable = (gpu.vram_gb - RESERVED_GB) * GIB - conversation
@@ -90,3 +95,19 @@ def predict(
         fits_on_computer=fits,
         decode_tok_s=decode,
     )
+
+
+# The same estimate for a run that was measured, from the model and GPU facts saved with it
+# (results.py), so "localtune run", "tune", "sweep" and "results" can show it beside the real
+# speed: how far off the simple formula was, for this model on this computer. It is worked out
+# for the run's own conversation length. Runs saved before the facts were kept, or with a model
+# or GPU not in the tables, have no estimate.
+
+
+def estimate_for(run: RunResult) -> float | None:
+    facts, gpu, speed = run.model_facts, run.gpu_facts, run.speed
+    if facts is None or gpu is None or speed is None:
+        return None
+    file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
+    tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
+    return predict(facts, file, gpu, tokens, run.hardware.ram_gb).decode_tok_s

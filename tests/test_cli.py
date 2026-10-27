@@ -15,6 +15,7 @@ from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import Speed, load_results
+from localtune.runners import base
 from localtune.runners.base import BackendError, EngineRun
 from localtune.runners.llamacpp import parse_output
 from localtune.runners.web_api import Server
@@ -758,3 +759,13 @@ def test_localtune_on_its_own_lists_the_commands():
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0
     assert "sweep" in result.output and "LOCALTUNE_NO_ANIMATION" in result.output
+
+
+def test_run_shows_the_estimate_beside_the_measured_speed(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
+    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    assert "Decode estimate" in result.output
+    assert "from 'localtune predict'" in result.output
