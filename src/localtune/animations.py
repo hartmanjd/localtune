@@ -96,9 +96,14 @@ HOLD_FRAMES = 4
 
 
 def logo_shade(column: int) -> str:
-    """The logo's own color: deep purple at the left, brighter toward the right, never so light
-    that the shimmer gets lost in it."""
-    return PURPLES[1 + column * 3 // WIDTH]
+    """The logo's own color: light purple at the left, deepening toward the right."""
+    return purple(column / WIDTH / 2 + 0.3)
+
+
+def shine_shade(column: int) -> str:
+    """The shimmer's color over a column: white over the deep purples and deep purple over the
+    light ones, so it stands out all the way across."""
+    return SHINE_COLOR if PURPLES.index(logo_shade(column)) < 3 else PURPLES[0]
 
 
 def shine(frame: int, column: int) -> bool:
@@ -136,7 +141,7 @@ def logo_frame(frame: int, lands: dict[tuple[int, int], int], rng: random.Random
             elif frame < land:
                 row.append(rng.choice(STROKES), style=PURPLES[0])
             else:
-                shade = SHINE_COLOR if shine(frame, column) else logo_shade(column)
+                shade = shine_shade(column) if shine(frame, column) else logo_shade(column)
                 row.append(char, style=f"bold {shade}")
         rows.append(row)
     return stack(rows)
