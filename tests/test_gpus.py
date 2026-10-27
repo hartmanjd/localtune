@@ -35,3 +35,7 @@ def test_finds_a_gpu_by_its_nvidia_smi_name(name, vram_gb, bandwidth):
 def test_laptop_and_unknown_gpus_are_not_guessed():
     assert find_gpu_spec("NVIDIA GeForce RTX 4070 Laptop GPU", 8.0) is None
     assert find_gpu_spec("Some Future GPU", 16.0) is None
+
+
+def test_a_name_alone_picks_the_version_with_the_most_memory():
+    assert find_gpu_spec("RTX 3060").vram_gb == 12

@@ -44,7 +44,8 @@ def load_gpu_table() -> list[GpuSpec]:
 # Matching nvidia-smi's name to the table. nvidia-smi says "NVIDIA GeForce RTX 4070 Ti SUPER"
 # or "Tesla T4"; the table leaves off the brand words. Some cards come with two memory sizes
 # under one name (the RTX 3060 has 8 and 12 GB versions, with different memory speeds), so the
-# memory size nvidia-smi reports picks between them.
+# memory size nvidia-smi reports picks between them. With no memory size, like a GPU named in
+# "localtune predict --gpu-name", the version with the most memory is picked.
 
 BRAND_WORDS = ("NVIDIA ", "GeForce ", "Tesla ")
 
@@ -55,8 +56,10 @@ def short_name(name: str) -> str:
     return name.strip().lower()
 
 
-def find_gpu_spec(name: str, vram_gb: float) -> GpuSpec | None:
+def find_gpu_spec(name: str, vram_gb: float | None = None) -> GpuSpec | None:
     matches = [spec for spec in load_gpu_table() if short_name(spec.name) == short_name(name)]
     if not matches:
         return None
+    if vram_gb is None:
+        return max(matches, key=lambda spec: spec.vram_gb)
     return min(matches, key=lambda spec: abs(spec.vram_gb - vram_gb))
