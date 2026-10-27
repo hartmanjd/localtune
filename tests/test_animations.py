@@ -1,6 +1,6 @@
 # Tests for the opening animations. They check that every scene has a few small frames to show,
-# that the scenes stay out of the way when nobody is watching a terminal or they are switched off, and
-# that a scene plays through on a terminal (without waiting between frames).
+# that the scenes stay out of the way when nobody is watching a terminal or they are switched
+# off, and that a scene plays through on a terminal (without waiting between frames).
 
 import io
 import re
