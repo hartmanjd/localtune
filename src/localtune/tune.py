@@ -24,14 +24,24 @@ ATTENTION_AND_CACHE = [(False, "f16"), (True, "f16"), (True, "q8_0"), (True, "q4
 UBATCH_SIZES = [256, 512, 1024, 2048]
 
 
-# Each combination is a set of BenchOptions fields (runners/llamacpp.py).
+# Each combination is a set of BenchOptions fields (runners/llamacpp.py). With a long prompt,
+# flash attention off is far slower on most GPUs (it re-reads the whole conversation for every
+# step), so it is tried only once, last, at llama.cpp's default micro-batch: enough to catch a
+# GPU where flash attention doesn't help, and to keep a long-prompt flash-off run in the data.
+
+LONG_PROMPT = 4096
+DEFAULT_UBATCH = 512
 
 
-def combinations() -> list[dict]:
-    return [
+def combinations(prompt_tokens: int = 512) -> list[dict]:
+    combos = [
         {"flash_attention": flash, "kv_cache": cache, "ubatch_size": ubatch}
         for (flash, cache), ubatch in product(ATTENTION_AND_CACHE, UBATCH_SIZES)
     ]
+    if prompt_tokens < LONG_PROMPT:
+        return combos
+    flash_on = [c for c in combos if c["flash_attention"]]
+    return flash_on + [{"flash_attention": False, "kv_cache": "f16", "ubatch_size": DEFAULT_UBATCH}]
 
 
 def describe(settings: dict) -> str:

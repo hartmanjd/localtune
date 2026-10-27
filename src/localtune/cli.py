@@ -465,7 +465,7 @@ def tune(
         save_result(result)
         return result
 
-    combos, runs = combinations(), []
+    combos, runs = combinations(prompt_tokens), []
     try:
         if gpu_layers is None and cpu_moe is None:
             tokens = prompt_tokens + gen_tokens
