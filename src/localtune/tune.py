@@ -72,6 +72,29 @@ def fastest(runs: list[RunResult]) -> RunResult | None:
     return min(worked, key=answer_seconds, default=None)
 
 
+# How much to trust the winner. The same settings measured twice differ by a few percent, so
+# settings within NOISE of the fastest are as good as it, and the winner only matters if it
+# beats llama.cpp's usual settings (DEFAULTS: what it uses when nothing is set, flash attention
+# being on by default for the GPUs it supports) by more than that.
+
+NOISE = 0.03
+DEFAULTS = {"flash_attention": True, "kv_cache": "f16", "ubatch_size": DEFAULT_UBATCH}
+
+
+def as_good_as(best: RunResult, runs: list[RunResult]) -> list[RunResult]:
+    limit = answer_seconds(best) * (1 + NOISE)
+    return [r for r in runs if r is not best and (answer_seconds(r) or limit + 1) <= limit]
+
+
+def default_run(runs: list[RunResult]) -> RunResult | None:
+    for run in runs:
+        s = run.settings
+        used = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
+        if used | {"ubatch_size": s.ubatch_size} == DEFAULTS:
+            return run
+    return None
+
+
 # The "localtune run" options that repeat the winner's tuned settings, so it can be used again.
 
 

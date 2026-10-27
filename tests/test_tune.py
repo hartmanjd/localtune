@@ -8,7 +8,9 @@ from localtune.hardware import HardwareInfo
 from localtune.results import EnergyCost, RunResult, RunSettings, Speed
 from localtune.tune import (
     answer_seconds,
+    as_good_as,
     combinations,
+    default_run,
     describe,
     describe_split,
     fastest,
@@ -72,6 +74,19 @@ def test_slow_reading_can_lose_to_slower_writing():
     steady = a_run(100.0, prefill=1500.0)
     assert fastest([crawling_reader, steady]) is steady
     assert answer_seconds(steady) == pytest.approx(512 / 1500 + 128 / 100)
+
+
+def test_runs_within_noise_are_as_good_as_the_fastest():
+    best, close, far = a_run(100.0), a_run(98.0), a_run(90.0)
+    crashed = a_run(99.0, status="out_of_memory")
+    assert as_good_as(best, [best, close, far, crashed]) == [close]
+
+
+def test_finds_the_run_with_llama_cpps_usual_settings():
+    tuned = a_run(110.0, flash_attention=True, kv_cache_k="q8_0", ubatch_size=1024)
+    usual = a_run(100.0, flash_attention=True, kv_cache_k="f16", ubatch_size=512)
+    assert default_run([tuned, usual]) is usual
+    assert default_run([tuned]) is None
 
 
 def test_the_winner_can_be_run_again():
