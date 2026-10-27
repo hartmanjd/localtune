@@ -1,17 +1,20 @@
 """The short, colorful scenes localtune plays when a command starts."""
 
-# Just for fun: each command opens with its own scene of about a second, drawn in classic ASCII
-# art (slashes, pipes and underscores) in color, a few lines tall, before any work starts.
-# "localtune" on its own shows the logo with colors running across it, "sweep" a broom sweeping
-# the logo clean, "tune" a knob turning until it clicks into place, "doctor" a heartbeat that
-# ends with an OK and "run" a speedometer needle swinging up. The scenes never play while
-# anything is measured, and they are skipped when the output isn't a terminal a person is
-# watching (a file, a test, another program), or when LOCALTUNE_NO_ANIMATION is set, so they
-# never get in the way. cli.py decides which scene each command plays.
+# Just for fun, drawn in classic ASCII art (slashes, pipes and underscores) in color, a few lines
+# tall. "localtune" on its own opens with the logo, colors running across it. While a command
+# works, a small loading animation runs beside what it's doing: a broom sweeping the dust for
+# "sweep", a knob turning for "tune", a revving speedometer for "run" and a heartbeat for
+# "doctor", with a bar filling up when the number of runs left is known. They take a sliver of
+# CPU and nothing from the GPU (and every run saves how busy the CPU was, background.py). They
+# are skipped when the output isn't a terminal a person is watching (a file, a test, another
+# program), or when LOCALTUNE_NO_ANIMATION is set; then a plain spinner shows instead. cli.py
+# decides which animation each step shows.
 
 import math
 import os
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from rich.console import Console
 from rich.live import Live
@@ -25,12 +28,11 @@ def enabled(console: Console) -> bool:
     return console.is_terminal and not os.environ.get(OFF_SWITCH) and not console.no_color
 
 
-def play(console: Console, scene: str) -> None:
+def play_logo(console: Console) -> None:
     if not enabled(console):
         return
-    frames = SCENES[scene]()
-    keep = scene == "logo"
-    with Live(frames[0], console=console, refresh_per_second=FPS, transient=not keep) as live:
+    frames = logo_scene()
+    with Live(frames[0], console=console, refresh_per_second=FPS) as live:
         for frame in frames[1:]:
             time.sleep(1 / FPS)
             live.update(frame)
@@ -80,69 +82,77 @@ def logo_scene() -> list[Text]:
     return [stack(logo_frame(step / 20)) for step in range(20)]
 
 
-# Sweep: a broom moves left to right over the dust, and the logo appears clean behind it.
+# The loading animations. Each one draws a frame for how long the step has been running and,
+# when it's known, how far along the whole command is (0 to 1), as a few lines with the step's
+# label beside them. working() keeps one on screen while the step runs and clears it after.
 
-BROOM = ["  |  ", "  |  ", " /|\\ ", "/|||\\"]
-
-
-def sweep_scene() -> list[Text]:
-    frames = []
-    for upto in range(0, WIDTH + 1, 2):
-        rows = []
-        for full, part in zip(logo_frame(upto / WIDTH / 2, upto, dust=True), BROOM, strict=True):
-            row = full[:upto]
-            row.append(part, style="bold #af875f" if "|||" in part else "bold #d7af5f")
-            rows.append(row + full[upto + len(part) :])
-        frames.append(stack(rows))
-    frames.append(stack(logo_frame(0.5)))
-    return frames
+TRACK = 24
 
 
-# Tune: a knob turns from low to high, past its sweet spot and back, and clicks into place.
-
-KNOB = [
-    r"  .-'''-.  ",
-    r" /       \ ",
-    r"|    o    |",
-    r" '-.___.-' ",
-]
-# Where the knob's pointer is drawn for each turn, from all the way left to all the way right.
-POINTERS = [
-    [(2, 3, "-"), (2, 4, "-")],
-    [(1, 3, "\\")],
-    [(1, 5, "|")],
-    [(1, 7, "/")],
-    [(2, 6, "-"), (2, 7, "-")],
-]
+def bar(progress: float | None, width: int = TRACK) -> Text:
+    if progress is None:
+        return Text()
+    filled = round(width * min(max(progress, 0.0), 1.0))
+    row = Text("[")
+    for column in range(width):
+        if column < filled:
+            row.append("=", style=f"bold {rainbow(column / width / 2)}")
+        else:
+            row.append("-", style="grey50")
+    return row.append("] ")
 
 
-def knob_frame(turn: int, clicked: bool) -> Text:
-    grid = [list(line) for line in KNOB]
-    for row, column, char in POINTERS[turn]:
-        grid[row][column] = char
-    pointer = {(row, column) for row, column, _ in POINTERS[turn]}
-    rows = []
-    for number, line in enumerate(grid):
-        row = Text("  ")
-        for column, char in enumerate(line):
-            if (number, column) in pointer:
-                row.append(char, style="bold #ffd75f" if clicked else "bold #ffffff")
-            else:
-                row.append(char, style=rainbow(0.55 + column / len(line) / 3))
-        if number == 1:
-            row.append("   tuning...", style="bold")
-        if number == 2 and clicked:
-            row.append("   *click*  tuned", style="bold #87d787")
-        rows.append(row)
-    return stack(rows)
+# Sweep: a broom sways at the edge of the swept floor, which grows as the runs finish. Behind it
+# the floor is clean, ahead of it dusty.
+
+BRISTLES = "/|||\\"
 
 
-def tune_scene() -> list[Text]:
-    path = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 3, 3, 2, 2, 3, 3]
-    return [knob_frame(turn, clicked=False) for turn in path] + [knob_frame(3, clicked=True)] * 5
+def sweep_loader(seconds: float, progress: float | None) -> list[Text]:
+    room = TRACK - len(BRISTLES)
+    sway = math.sin(seconds * 5)
+    if progress is None:
+        at = round(room / 2 + room / 2 * sway)
+    else:
+        at = min(room, max(0, round(room * progress + 2 * sway)))
+    pushing_right = math.cos(seconds * 5) > 0
+    handle = Text(" " * (at + 2)).append("\\" if pushing_right else "/", style="bold #d7af5f")
+    floor = Text()
+    for column in range(at):
+        floor.append("_", style=rainbow(column / TRACK / 2))
+    floor.append(BRISTLES, style="bold #af875f")
+    for column in range(at + len(BRISTLES), TRACK):
+        floor.append(DUST[(column * 7) % len(DUST)], style="grey50")
+    return [handle, floor.append("  ")]
 
 
-# Doctor: a heartbeat line runs across the screen and ends with an OK.
+# Tune: a knob turning back and forth, beside a bar of the runs done.
+
+KNOB_TURNS = "-\\|/|\\"
+
+
+def tune_loader(seconds: float, progress: float | None) -> list[Text]:
+    pointer = KNOB_TURNS[int(seconds * 6) % len(KNOB_TURNS)]
+    row = Text("(", style="#5fafff").append(pointer, style="bold #ffd75f").append(") ", "#5fafff")
+    return [row + bar(progress)]
+
+
+# Run: a speedometer needle revving near the top, with speed lines streaming past.
+
+NEEDLE_REVS = "|/|/-/"
+STREAKS = "  -=>  -=>  "
+
+
+def run_loader(seconds: float, progress: float | None) -> list[Text]:
+    needle = NEEDLE_REVS[int(seconds * 8) % len(NEEDLE_REVS)]
+    shift = int(seconds * 12) % len(STREAKS)
+    streaks = (STREAKS[-shift:] + STREAKS[:-shift]) if shift else STREAKS
+    row = Text("(", style="#ff8700").append(needle, style="bold #ffffff").append(")", "#ff8700")
+    row.append(streaks + " ", style=rainbow(0.6))
+    return [row + bar(progress)]
+
+
+# Doctor: a heartbeat line scrolling past.
 
 BEAT = [
     r"     /\     ",
@@ -151,80 +161,46 @@ BEAT = [
 ]
 
 
-def doctor_scene() -> list[Text]:
-    lines = [part * 3 for part in BEAT]
-    frames = []
-    for length in range(2, len(lines[0]) + 1, 2):
-        rows = []
-        for line in lines:
-            row = Text("  ")
-            row.append(line[:length], style="bold #ff5f87")
-            rows.append(row)
-        frames.append(stack(rows))
+def doctor_loader(seconds: float, progress: float | None) -> list[Text]:
+    shift = int(seconds * 16) % len(BEAT[0])
     rows = []
-    for number, line in enumerate(lines):
-        row = Text("  ")
-        row.append(line, style="bold #ff5f87")
-        if number == 1:
-            row.append("  [ OK ]", style="bold #87d787")
-            row.append(" checking your computer", style="bold")
-        rows.append(row)
-    return frames + [stack(rows)] * 5
+    for line in BEAT:
+        looped = (line * 3)[shift : shift + len(line) * 2]
+        rows.append(Text(looped, style="bold #ff5f87").append("  "))
+    return rows
 
 
-# Run: a speedometer needle swings from zero up to full speed while the reading climbs.
-
-GAUGE = [
-    r"    _.-----._    ",
-    r"  .'         '.  ",
-    r" /      o      \ ",
-    r" 0           max ",
-]
-# Where the needle is drawn as it swings, from zero on the left to full speed on the right.
-NEEDLES = [
-    [(2, 4, "-"), (2, 5, "-"), (2, 6, "-")],
-    [(1, 5, "\\")],
-    [(1, 8, "|")],
-    [(1, 11, "/")],
-    [(2, 10, "-"), (2, 11, "-"), (2, 12, "-")],
-]
-TOP_SPEED = 120
-
-
-def gauge_frame(swing: int, reading: int) -> Text:
-    grid = [list(line) for line in GAUGE]
-    for row, column, char in NEEDLES[swing]:
-        grid[row][column] = char
-    needle = {(row, column) for row, column, _ in NEEDLES[swing]}
-    rows = []
-    for number, line in enumerate(grid):
-        row = Text("  ")
-        for column, char in enumerate(line):
-            if (number, column) in needle:
-                row.append(char, style="bold #ffffff")
-            elif char == "o":
-                row.append(char, style="bold #ff8700")
-            else:
-                row.append(char, style=rainbow(0.66 - column / len(line) / 3))
-        if number == 2:
-            row.append(f"  {reading:>3} tok/s", style="bold")
-        rows.append(row)
-    return stack(rows)
-
-
-def run_scene() -> list[Text]:
-    steps = 16
-    frames = [
-        gauge_frame(step * len(NEEDLES) // steps, step * TOP_SPEED // (steps - 1))
-        for step in range(steps)
-    ]
-    return frames + [gauge_frame(len(NEEDLES) - 1, TOP_SPEED)] * 4
-
-
-SCENES = {
-    "logo": logo_scene,
-    "sweep": sweep_scene,
-    "tune": tune_scene,
-    "doctor": doctor_scene,
-    "run": run_scene,
+LOADERS: dict[str, Callable[[float, float | None], list[Text]]] = {
+    "sweep": sweep_loader,
+    "tune": tune_loader,
+    "run": run_loader,
+    "doctor": doctor_loader,
 }
+
+
+class Loader:
+    def __init__(self, scene: str, label: str, progress: float | None) -> None:
+        self.draw, self.label, self.progress = LOADERS[scene], label, progress
+        self.started = time.monotonic()
+
+    def frame(self, seconds: float) -> Text:
+        rows = self.draw(seconds, self.progress)
+        rows[-1 if len(rows) < 3 else 1] = rows[-1 if len(rows) < 3 else 1] + Text(self.label)
+        return Text("  ") + Text("\n  ").join(rows)
+
+    def __rich__(self) -> Text:
+        return self.frame(time.monotonic() - self.started)
+
+
+@contextmanager
+def working(
+    console: Console, scene: str, label: str, progress: float | None = None
+) -> Iterator[None]:
+    if not enabled(console):
+        with console.status(label):
+            yield
+        return
+    with Live(
+        Loader(scene, label, progress), console=console, refresh_per_second=FPS, transient=True
+    ):
+        yield

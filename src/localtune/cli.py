@@ -30,7 +30,7 @@ from rich.progress import (
 from rich.table import Table
 
 from localtune import __version__
-from localtune.animations import play
+from localtune.animations import play_logo, working
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
@@ -81,18 +81,18 @@ app = typer.Typer()
 console = Console()
 
 
-# "localtune" on its own plays the logo (animations.py) and lists the commands. Each command
-# below opens with its own short scene before it starts working.
+# "localtune" on its own plays the logo (animations.py) and lists the commands. While the
+# commands below work, a small loading animation runs beside what they're doing.
 
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     """Benchmark local LLMs on your own hardware.
 
-    Set LOCALTUNE_NO_ANIMATION=1 to turn off the short animations commands open with.
+    Set LOCALTUNE_NO_ANIMATION=1 to turn off the logo and loading animations.
     """
     if ctx.invoked_subcommand is None:
-        play(console, "logo")
+        play_logo(console)
         console.print(ctx.get_help(), markup=False, highlight=False)
 
 
@@ -151,8 +151,8 @@ def doctor(
     ),
 ) -> None:
     """Check that this computer is ready to benchmark, and what to fix if not."""
-    play(console, "doctor")
-    checks = run_checks()
+    with working(console, "doctor", "Checking this computer..."):
+        checks = run_checks()
     show_checks(checks)
 
     if needs_llama_cpp(checks) and offer_llama_cpp(ask=not install):
@@ -281,7 +281,6 @@ def run(
     ),
 ) -> None:
     """Benchmark a model with llama.cpp or a local AI server, and save the result."""
-    play(console, "run")
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     if backend not in BACKENDS:
         console.print(f"Unknown backend {backend}. Choose from: {', '.join(BACKENDS)}")
@@ -333,7 +332,7 @@ def run(
         label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    with console.status(label):
+    with working(console, "run", label):
         result = measure(
             engine, requested, electricity, repetitions, gpu_index=gpu, background=background
         )
@@ -523,7 +522,6 @@ def tune(
     ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
-    play(console, "tune")
     given_prompt, given_gen = prompt_tokens, gen_tokens
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
@@ -620,7 +618,9 @@ def tune_model(
     tune_id = uuid4().hex
     session.placements = {cache: session.given for cache in KV_CACHE_SIZE}
 
-    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
+    def bench(
+        settings: dict, label: str, placement: dict | None = None, progress: float | None = None
+    ) -> RunResult:
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -631,7 +631,7 @@ def tune_model(
         )
         engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
         requested = requested_settings(model_file, options, model_name)
-        with console.status(label):
+        with working(console, "tune", label, progress):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
         result.tune_id, result.sweep_id = tune_id, sweep_id
         save_result(result)
@@ -650,7 +650,8 @@ def tune_model(
     for number, settings in enumerate(combos, 1):
         left = time_left(time.monotonic() - started, number - 1, len(combos))
         label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
-        result = bench(settings, label, session.placements[settings["kv_cache"]])
+        progress = (number - 1) / len(combos)
+        result = bench(settings, label, session.placements[settings["kv_cache"]], progress)
         session.runs.append(result)
         console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
 
@@ -887,7 +888,6 @@ def sweep(
     ),
 ) -> None:
     """Benchmark many models one after another, like every model you have in Ollama."""
-    play(console, "sweep")
     lengths = {name: lengths_for(name, None, None) for name in use or USES}
     llama_bench = find_tool("llama-bench")
     if llama_bench is None:
@@ -931,7 +931,8 @@ def sweep(
                 engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
                 requested = requested_settings(model_file, options, model_name)
                 left = time_left(time.monotonic() - started, done, planned)
-                with console.status(f"Run {done + 1} of {planned}: {model}, {use_name}{left}"):
+                label = f"Run {done + 1} of {planned}: {model}, {use_name}{left}"
+                with working(console, "sweep", label, done / planned):
                     result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
                 result.sweep_id = sweep_id
                 save_result(result)
