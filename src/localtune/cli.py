@@ -65,6 +65,8 @@ from localtune.tune import (
     find_best_split,
     first_guess,
     run_flags,
+    server_context,
+    server_flags,
     split_settings,
 )
 from localtune.uses import UnknownUseError, token_lengths
@@ -545,9 +547,36 @@ def tune(
         "--threads": threads,
     }
     fixed_flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
-    if not show_tune(runs, f"{model}{fixed_flags}", planned=len(combos)):
+    best = show_tune(runs, f"{model}{fixed_flags}", planned=len(combos))
+    if best is None:
         raise typer.Exit(1)
+    show_server_command(best, model_file, placement, prompt_tokens + gen_tokens, threads, gpu)
     console.print(f"All runs saved to {results_file()}")
+
+
+# The winner as a llama-server command (tune.py), for chatting with the model at these settings
+# in the browser, or from any app that talks to a local AI server. A path with spaces is quoted
+# so it can be pasted as it is, in PowerShell as well.
+
+
+def show_server_command(
+    best: RunResult, model_file: Path, placement: dict, tokens: int, threads, gpu: int
+) -> None:
+    server = find_tool("llama-server") or "llama-server"
+    flags = server_flags(best, placement, tokens, threads, gpu)
+    command = f"{quoted(server, program=True)} -m {quoted(str(model_file))} {flags}"
+    console.print("To chat with the model at these settings, start llama.cpp's server:")
+    console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+    console.print(
+        f"Then open http://localhost:8080 in your browser. It has room for a "
+        f"{server_context(tokens):,}-token conversation."
+    )
+
+
+def quoted(text: str, program: bool = False) -> str:
+    if " " not in text:
+        return text
+    return f'& "{text}"' if program and sys.platform == "win32" else f'"{text}"'
 
 
 # A model bigger than the GPU's memory is first split between the GPU and RAM (tune.py says
@@ -610,7 +639,7 @@ def outcome(result: RunResult) -> str:
     return f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
 
 
-def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -> bool:
+def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -> RunResult | None:
     best = fastest(runs)
     if best is None:
         if runs:
@@ -620,7 +649,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -
                     "The model didn't fit in GPU memory. Try again with fewer layers on the GPU, "
                     "like --gpu-layers 20."
                 )
-        return False
+        return None
 
     worked = sorted((run for run in runs if answer_seconds(run) is not None), key=answer_seconds)
     table = Table(title=f"{best.settings.model}, fastest first")
@@ -660,7 +689,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -
         console.print(
             f"A {s.kv_cache_k} KV cache saves memory but can make answers slightly worse than f16."
         )
-    return True
+    return best
 
 
 # How much the winner can be trusted (tune.py): settings within measurement noise of it are just

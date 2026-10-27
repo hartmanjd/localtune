@@ -104,6 +104,39 @@ def run_flags(run: RunResult) -> str:
     return f"{flash} --kv-cache {s.kv_cache_k} --ubatch-size {s.ubatch_size}"
 
 
+# The same settings for llama-server, llama.cpp's chat server, so the tuned settings can be used
+# for real and not only benchmarked. The server sets aside memory for the whole conversation up
+# front (-c), so it gets room for the conversation that was tested, rounded up, and at least
+# SERVER_CONTEXT tokens so a short test still leaves room to chat. A model that fit on the GPU
+# runs with all its layers there, like it did in the benchmark.
+
+SERVER_CONTEXT = 4096
+ALL_LAYERS = 999
+
+
+def server_context(tokens: int) -> int:
+    return max(SERVER_CONTEXT, math.ceil(tokens / 1024) * 1024)
+
+
+def server_flags(
+    run: RunResult, placement: dict, tokens: int, threads: int | None = None, gpu: int = 0
+) -> str:
+    s = run.settings
+    gpu_layers = placement.get("gpu_layers")
+    flags = {
+        "-c": server_context(tokens),
+        "-ngl": ALL_LAYERS if gpu_layers is None else gpu_layers,
+        "--n-cpu-moe": placement.get("cpu_moe_layers"),
+        "-fa": "on" if s.flash_attention else "off",
+        "-ctk": s.kv_cache_k,
+        "-ctv": s.kv_cache_k,
+        "-ub": s.ubatch_size,
+        "-t": threads,
+        "-mg": gpu or None,
+    }
+    return " ".join(f"{flag} {value}" for flag, value in flags.items() if value is not None)
+
+
 # Models bigger than the GPU. llama.cpp can keep part of a model in the computer's normal
 # memory (RAM) and run that part on the CPU, which is much slower, so the more of the model
 # fits on the GPU the faster it writes, until the GPU runs out of memory (or, on Windows, starts

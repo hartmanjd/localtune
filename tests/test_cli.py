@@ -190,7 +190,7 @@ def test_doctor_explains_when_it_cant_install(monkeypatch):
 def fake_run(monkeypatch, tmp_path, outcome):
     # 'localtune run' with a pretend llama-bench that gives back the saved example run, or fails.
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(cli, "find_tool", lambda name: "llama-bench")
+    monkeypatch.setattr(cli, "find_tool", lambda name: name)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
     monkeypatch.setattr(cli, "run_llama_bench", outcome)
     model = tmp_path / "llama-2-7b.Q4_0.gguf"
@@ -437,6 +437,9 @@ def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_pat
     assert "Fastest on this computer: flash attn on, KV q8_0, micro-batch 2048." in result.output
     assert f"localtune run {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048" in result.output
     assert "Tuned is 15% faster than llama.cpp's usual settings" in result.output
+    server = f"llama-server -m {model} -c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 2048"
+    assert server in result.output
+    assert "room for a 4,096-token conversation" in result.output
     saved = load_results()
     assert len(saved) == 16
     assert len({run.tune_id for run in saved}) == 1 and saved[0].tune_id
@@ -523,6 +526,7 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     assert "don't fit in the GPU's memory" in result.output
     assert "Fastest split: experts of 25 of 48 layers in RAM." in result.output
     assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
+    assert "-ngl 49 --n-cpu-moe 25 -fa on" in result.output
     assert len(load_results()) == 4 + 16
 
 
@@ -551,6 +555,7 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert f"localtune run {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
     assert "Trying 13 combinations" in result.output
+    assert "room for a 16,384-token conversation" in result.output
     result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
     assert f"localtune run {model} --use documents --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
@@ -584,3 +589,10 @@ def test_tune_says_how_long_is_left():
     assert cli.time_left(0, 0, 16) == ""
     assert cli.time_left(60, 2, 16) == " (about 7 min left)"
     assert cli.time_left(10, 15, 16) == " (under a minute left)"
+
+
+def test_paths_with_spaces_are_quoted_for_pasting(monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    assert cli.quoted(r"C:\My Models\a.gguf") == r'"C:\My Models\a.gguf"'
+    assert cli.quoted(r"C:\Program Files\llama-server.exe", program=True).startswith('& "')
+    assert cli.quoted("llama-server", program=True) == "llama-server"
