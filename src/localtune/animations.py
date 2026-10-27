@@ -1,17 +1,18 @@
-"""The short, colorful scenes localtune plays when a command starts."""
+"""The colorful logo and the loading animations localtune shows in the terminal."""
 
 # Just for fun, drawn in classic ASCII art (slashes, pipes and underscores) in color, a few lines
-# tall. "localtune" on its own opens with the logo, colors running across it. While a command
-# works, a small loading animation runs beside what it's doing: a broom sweeping the dust for
-# "sweep", a knob turning for "tune", a revving speedometer for "run" and a heartbeat for
-# "doctor", with a bar filling up when the number of runs left is known. They take a sliver of
-# CPU and nothing from the GPU (and every run saves how busy the CPU was, background.py). They
-# are skipped when the output isn't a terminal a person is watching (a file, a test, another
-# program), or when LOCALTUNE_NO_ANIMATION is set; then a plain spinner shows instead. cli.py
-# decides which animation each step shows.
+# tall. "localtune" on its own opens with the logo assembling itself in shades of purple. While
+# a command works, a small loading animation runs beside what it's doing: a broom sweeping the
+# dust for "sweep", a switchboard of sliders and dials for "tune", a little runner for "run" and
+# a heartbeat for "doctor", with a bar filling up when the number of runs left is known. They
+# take a sliver of CPU and nothing from the GPU (and every run saves how busy the CPU was,
+# background.py). They are skipped when the output isn't a terminal a person is watching (a
+# file, a test, another program), or when LOCALTUNE_NO_ANIMATION is set; then a plain spinner
+# shows instead. cli.py decides which animation each step shows.
 
 import math
 import os
+import random
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -38,8 +39,24 @@ def play_logo(console: Console) -> None:
             live.update(frame)
 
 
-# The logo: "localtune" in small ASCII lettering, four rows high. Each frame colors the letters
-# along a rainbow that shifts a little further each time, so the colors seem to run across it.
+# The colors: shades of purple, from deep to light.
+
+PURPLES = ["#5f00af", "#8700d7", "#af00ff", "#af5fff", "#af87ff", "#d7afff"]
+
+
+def purple(position: float) -> str:
+    """A shade of purple, from 0 (deep) to 1 (light), wrapping around past 1."""
+    wave = (math.sin(2 * math.pi * position) + 1) / 2
+    return PURPLES[min(len(PURPLES) - 1, int(wave * len(PURPLES)))]
+
+
+def stack(rows: list[Text]) -> Text:
+    return Text("\n").join(rows)
+
+
+# The logo: "localtune" in small ASCII lettering, four rows high, assembling itself over about
+# two seconds. Every piece starts as a random dim stroke and snaps into place at its own moment,
+# roughly left to right, then a light shimmer runs across the finished word.
 
 LOGO = [
     r" _              _ _                 ",
@@ -48,64 +65,69 @@ LOGO = [
     r"|_\___/\__\__,_|_|\__|\_,_|_||_\___|",
 ]
 WIDTH = len(LOGO[0])
-DUST = ".,'`"
+STROKES = "/\\|_-.'`"
+BUILD_FRAMES = 32
+SHIMMER_FRAMES = 12
 
 
-def rainbow(position: float) -> str:
-    """A color around the color wheel, from 0 to 1, as a hex code."""
-    red, green, blue = (
-        int(127 + 127 * math.sin(2 * math.pi * (position + shift))) for shift in (0, 1 / 3, 2 / 3)
-    )
-    return f"#{red:02x}{green:02x}{blue:02x}"
-
-
-def logo_frame(shift: float, upto: int = WIDTH, dust: bool = False) -> list[Text]:
+def logo_frame(frame: int, lands: dict[tuple[int, int], int], rng: random.Random) -> Text:
     rows = []
     for number, line in enumerate(LOGO):
         row = Text()
         for column, char in enumerate(line):
-            if column < upto:
-                row.append(char, style=f"bold {rainbow(column / WIDTH + shift)}")
-            elif dust and char != " ":
-                row.append(DUST[(column * 7 + number * 3) % len(DUST)], style="grey50")
-            else:
+            land = lands.get((number, column))
+            if land is None:
                 row.append(" ")
+            elif frame < land - 6:
+                row.append(" ")
+            elif frame < land:
+                row.append(rng.choice(STROKES), style=PURPLES[0])
+            else:
+                shimmer = (frame - BUILD_FRAMES) / SHIMMER_FRAMES - column / WIDTH
+                shade = PURPLES[-1] if 0 <= shimmer < 0.25 else purple(column / WIDTH / 2 + 0.3)
+                row.append(char, style=f"bold {shade}")
         rows.append(row)
-    return rows
+    return stack(rows)
 
 
-def stack(rows: list[Text]) -> Text:
-    return Text("\n").join(rows)
-
-
-def logo_scene() -> list[Text]:
-    return [stack(logo_frame(step / 20)) for step in range(20)]
+def logo_scene(seed: int | None = None) -> list[Text]:
+    rng = random.Random(seed)
+    lands = {
+        (number, column): round(column / WIDTH * (BUILD_FRAMES - 8)) + rng.randint(2, 8)
+        for number, line in enumerate(LOGO)
+        for column, char in enumerate(line)
+        if char != " "
+    }
+    return [logo_frame(frame, lands, rng) for frame in range(BUILD_FRAMES + SHIMMER_FRAMES)]
 
 
 # The loading animations. Each one draws a frame for how long the step has been running and,
-# when it's known, how far along the whole command is (0 to 1), as a few lines with the step's
-# label beside them. working() keeps one on screen while the step runs and clears it after.
+# when it's known, how far along the whole command is (0 to 1), as a few short lines with the
+# step's label beside the bottom one. working() keeps one on screen while the step runs and
+# clears it after.
 
-TRACK = 24
+TRACK = 14
+DUST = ".,'`"
 
 
-def bar(progress: float | None, width: int = TRACK) -> Text:
+def bar(progress: float | None, width: int = 10) -> Text:
     if progress is None:
         return Text()
     filled = round(width * min(max(progress, 0.0), 1.0))
     row = Text("[")
     for column in range(width):
         if column < filled:
-            row.append("=", style=f"bold {rainbow(column / width / 2)}")
+            row.append("=", style=f"bold {purple(column / width / 2 + 0.25)}")
         else:
             row.append("-", style="grey50")
     return row.append("] ")
 
 
 # Sweep: a broom sways at the edge of the swept floor, which grows as the runs finish. Behind it
-# the floor is clean, ahead of it dusty.
+# the floor is clean, ahead of it dusty. The handle leans back from the way it's pushing.
 
 BRISTLES = "/|||\\"
+HANDLE = 3
 
 
 def sweep_loader(seconds: float, progress: float | None) -> list[Text]:
@@ -116,40 +138,78 @@ def sweep_loader(seconds: float, progress: float | None) -> list[Text]:
     else:
         at = min(room, max(0, round(room * progress + 2 * sway)))
     pushing_right = math.cos(seconds * 5) > 0
-    handle = Text(" " * (at + 2)).append("\\" if pushing_right else "/", style="bold #d7af5f")
+    rows = []
+    for height in range(HANDLE):
+        lean = HANDLE - 1 - height
+        column = at + 2 - lean if pushing_right else at + 2 + lean
+        stick = "\\" if pushing_right else "/"
+        rows.append(Text(" " * column).append(stick, style="bold #d7af5f"))
     floor = Text()
     for column in range(at):
-        floor.append("_", style=rainbow(column / TRACK / 2))
+        floor.append("_", style=purple(column / TRACK / 2 + 0.3))
     floor.append(BRISTLES, style="bold #af875f")
     for column in range(at + len(BRISTLES), TRACK):
         floor.append(DUST[(column * 7) % len(DUST)], style="grey50")
-    return [handle, floor.append("  ")]
+    return rows + [floor.append("  ")]
 
 
-# Tune: a knob turning back and forth, beside a bar of the runs done.
+# Tune: a little switchboard, sliders gliding up and down between dials that turn, each at its
+# own pace, beside a bar of the runs done.
 
-KNOB_TURNS = "-\\|/|\\"
+SLIDER_ROWS = 3
+DIAL_TURNS = "-\\|/"
+BOARD = "sdsds"
 
 
 def tune_loader(seconds: float, progress: float | None) -> list[Text]:
-    pointer = KNOB_TURNS[int(seconds * 6) % len(KNOB_TURNS)]
-    row = Text("(", style="#5fafff").append(pointer, style="bold #ffd75f").append(") ", "#5fafff")
-    return [row + bar(progress)]
+    rows = [Text("| ", style=PURPLES[1]) for _ in range(SLIDER_ROWS)]
+    for number, part in enumerate(BOARD):
+        pace = 2 + number * 0.7
+        if part == "s":
+            level = round((math.sin(seconds * pace + number) + 1) / 2 * (SLIDER_ROWS - 1))
+            for height, row in enumerate(rows):
+                knob = height == SLIDER_ROWS - 1 - level
+                row.append("=" if knob else "|", style="bold #ffd75f" if knob else "grey50")
+        else:
+            pointer = DIAL_TURNS[int(seconds * pace * 2) % len(DIAL_TURNS)]
+            for height, row in enumerate(rows):
+                if height == 1:
+                    row.append("(", style=PURPLES[3]).append(pointer, "bold #ffffff")
+                    row.append(")", style=PURPLES[3])
+                else:
+                    row.append(" o " if height == 0 else "   ", style=PURPLES[4])
+        for row in rows:
+            row.append(" ")
+    for row in rows:
+        row.append("|", style=PURPLES[1])
+    rows[-1].append("  ").append(bar(progress))
+    return rows
 
 
-# Run: a speedometer needle revving near the top, with speed lines streaming past.
+# Run: a little runner dashing back and forth, legs and arms swinging.
 
-NEEDLE_REVS = "|/|/-/"
-STREAKS = "  -=>  -=>  "
+RUNNER = [
+    [" o ", "/|\\", "/ >"],
+    [" o ", "<|-", " |\\"],
+]
+MIRROR = str.maketrans("/\\<>", "\\/><")
 
 
 def run_loader(seconds: float, progress: float | None) -> list[Text]:
-    needle = NEEDLE_REVS[int(seconds * 8) % len(NEEDLE_REVS)]
-    shift = int(seconds * 12) % len(STREAKS)
-    streaks = (STREAKS[-shift:] + STREAKS[:-shift]) if shift else STREAKS
-    row = Text("(", style="#ff8700").append(needle, style="bold #ffffff").append(")", "#ff8700")
-    row.append(streaks + " ", style=rainbow(0.6))
-    return [row + bar(progress)]
+    room = TRACK - 3
+    steps = int(seconds * 10)
+    lap = steps % (room * 2)
+    going_right = lap < room
+    at = lap if going_right else room * 2 - lap
+    pose = RUNNER[steps % 2]
+    if not going_right:
+        pose = [part[::-1].translate(MIRROR) for part in pose]
+    rows = [
+        Text(" " * at).append(part, style=f"bold {PURPLES[3 if height == 0 else 4]}")
+        for height, part in enumerate(pose)
+    ]
+    rows[-1].append(" " * (room - at) + "  ").append(bar(progress))
+    return rows
 
 
 # Doctor: a heartbeat line scrolling past.
@@ -165,7 +225,7 @@ def doctor_loader(seconds: float, progress: float | None) -> list[Text]:
     shift = int(seconds * 16) % len(BEAT[0])
     rows = []
     for line in BEAT:
-        looped = (line * 3)[shift : shift + len(line) * 2]
+        looped = (line * 3)[shift : shift + TRACK + 4]
         rows.append(Text(looped, style="bold #ff5f87").append("  "))
     return rows
 
@@ -176,16 +236,19 @@ LOADERS: dict[str, Callable[[float, float | None], list[Text]]] = {
     "run": run_loader,
     "doctor": doctor_loader,
 }
+# Which line the label goes on: the bottom one, except the heartbeat's middle (its baseline).
+LABEL_ROW = {"doctor": 1}
 
 
 class Loader:
     def __init__(self, scene: str, label: str, progress: float | None) -> None:
-        self.draw, self.label, self.progress = LOADERS[scene], label, progress
+        self.scene, self.label, self.progress = scene, label, progress
         self.started = time.monotonic()
 
     def frame(self, seconds: float) -> Text:
-        rows = self.draw(seconds, self.progress)
-        rows[-1 if len(rows) < 3 else 1] = rows[-1 if len(rows) < 3 else 1] + Text(self.label)
+        rows = LOADERS[self.scene](seconds, self.progress)
+        at = LABEL_ROW.get(self.scene, len(rows) - 1)
+        rows[at] = rows[at] + Text(self.label)
         return Text("  ") + Text("\n  ").join(rows)
 
     def __rich__(self) -> Text:

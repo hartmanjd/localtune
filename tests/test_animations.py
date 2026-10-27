@@ -20,9 +20,12 @@ def shown(console: Console) -> str:
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", console.file.getvalue())
 
 
-def test_the_logo_spells_localtune_in_four_even_rows():
+def test_the_logo_spells_localtune_in_four_even_rows_and_assembles_itself():
     assert len(LOGO) == 4 and len({len(row) for row in LOGO}) == 1
-    assert len(logo_scene()) >= 10
+    frames = logo_scene(seed=1)
+    assert 30 <= len(frames) <= 50
+    assert frames[0].plain.count(" ") > frames[-1].plain.count(" ")
+    assert frames[-1].plain.splitlines() == LOGO
 
 
 @pytest.mark.parametrize("scene", sorted(LOADERS))
@@ -31,14 +34,14 @@ def test_every_loader_is_small_and_shows_its_label(scene, progress):
     loader = Loader(scene, "Run 3 of 12", progress)
     for tenth in range(30):
         lines = loader.frame(tenth / 10).plain.splitlines()
-        assert len(lines) <= 3
+        assert len(lines) <= 4
         assert all(len(line) <= 60 for line in lines)
         assert sum("Run 3 of 12" in line for line in lines) == 1
 
 
 def test_the_bar_fills_as_the_runs_finish():
-    assert "[" not in Loader("tune", "", None).frame(0).plain
-    assert Loader("tune", "", 0.5).frame(0).plain.count("=") == 12
+    assert "[" not in Loader("run", "", None).frame(0).plain
+    assert Loader("run", "", 0.5).frame(0).plain.count("=") == 5
 
 
 def test_animations_only_play_on_a_terminal_and_can_be_switched_off(monkeypatch):
