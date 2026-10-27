@@ -6,10 +6,12 @@ import pytest
 from typer.testing import CliRunner
 
 from localtune import cli
+from localtune.cost import DEFAULT_PRICE
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
-from localtune.predict import predict
+from localtune.predict import estimate_for, predict
+from localtune.results import RunResult, RunSettings, Speed, energy_and_cost, model_facts
 
 runner = CliRunner()
 GPU = find_gpu_spec("RTX 4070 Ti SUPER", 16)
@@ -81,3 +83,28 @@ def test_predict_for_this_computers_gpu(monkeypatch):
     assert result.exit_code == 0
     assert "Writing speed" not in result.output
     assert "localtune run" not in result.output
+
+
+def saved_run(**changes) -> RunResult:
+    fields = dict(
+        rig_id="test-rig",
+        repetitions=3,
+        settings=RunSettings(engine="llama.cpp", model="qwen3:14b"),
+        hardware=HardwareInfo(
+            os="Windows-11", is_wsl=False, cpu_name=None, cpu_threads=16, ram_gb=32.0, gpus=[]
+        ),
+        model_facts=model_facts("qwen3:14b"),
+        gpu_facts=GPU,
+        speed=Speed(prompt_tokens=3 * 512, generated_tokens=3 * 256, decode_tok_s=63),
+        energy=energy_and_cost(None, None, DEFAULT_PRICE),
+    )
+    return RunResult(**{**fields, **changes})
+
+
+def test_a_saved_run_gets_the_same_estimate_as_predict():
+    assert estimate_for(saved_run()) == pytest.approx(39.8, abs=0.1)
+
+
+def test_runs_saved_without_facts_have_no_estimate():
+    assert estimate_for(saved_run(model_facts=None)) is None
+    assert estimate_for(saved_run(gpu_facts=None)) is None
