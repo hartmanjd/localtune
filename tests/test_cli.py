@@ -641,3 +641,75 @@ def test_paths_with_spaces_are_quoted_for_pasting(monkeypatch):
     assert cli.quoted(r"C:\My Models\a.gguf") == r'"C:\My Models\a.gguf"'
     assert cli.quoted(r"C:\Program Files\llama-server.exe", program=True).startswith('& "')
     assert cli.quoted("llama-server", program=True) == "llama-server"
+
+
+def test_sweep_benchmarks_each_model_for_each_use(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return example_run(llama_bench, model, options, name)
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: None)
+    result = runner.invoke(
+        cli.app, ["sweep", str(model), "gone:7b", "--use", "chat", "--use", "code"]
+    )
+    assert result.exit_code == 0
+    assert "Benchmarking 2 models for chat, code: 4 runs" in result.output
+    assert "Skipping gone:7b" in result.output
+    assert [(o.prompt_tokens, o.gen_tokens) for o in asked] == [(512, 256), (8000, 512)]
+    assert "Sweep results" in result.output
+    saved = load_results()
+    assert len(saved) == 2 and saved[0].sweep_id and saved[0].sweep_id == saved[1].sweep_id
+
+
+def test_sweep_takes_every_ollama_model_when_none_are_named(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "downloaded_models", lambda: ["qwen3:8b"])
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: model)
+    result = runner.invoke(cli.app, ["sweep", "--use", "chat"])
+    assert "Benchmarking 1 model for chat" in result.output
+    assert load_results()[0].settings.model == "qwen3:8b"
+
+
+def test_sweep_without_any_models(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "downloaded_models", lambda: [])
+    result = runner.invoke(cli.app, ["sweep"])
+    assert result.exit_code == 1
+    assert "ollama pull" in result.output
+
+
+def test_sweep_starts_a_model_too_big_for_the_gpu_from_a_split(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=48, experts=128, expert_share=0.9)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    runner.invoke(cli.app, ["sweep", str(model), "--use", "chat"])
+    assert (asked[0].gpu_layers, asked[0].cpu_moe_layers) == (49, 27)
+
+
+def test_sweep_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
+    calls = itertools.count()
+
+    def stopped_on_the_second(llama_bench, model, options, name=None):
+        if next(calls) == 1:
+            raise KeyboardInterrupt
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, stopped_on_the_second)
+    result = runner.invoke(cli.app, ["sweep", str(model)])
+    assert "Stopped" in result.output
+    assert len(load_results()) == 1
