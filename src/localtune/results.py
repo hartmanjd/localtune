@@ -150,9 +150,10 @@ def gpu_facts(hardware: HardwareInfo, gpu_index: int) -> GpuSpec | None:
 # (a quick screening try, a full measurement or a final confirmation), whether it worked, and,
 # for runs made by "localtune tune", which tuning session it belonged to (tune_id), so the runs
 # that only differ in their settings can be compared with each other. Runs made by "localtune
-# sweep" share a sweep_id the same way, so one night's runs over many models stay together. It
-# also keeps what else the computer was doing when the run started (background.py), so busy
-# runs can be told apart.
+# sweep" share a sweep_id the same way, so one night's runs over many models stay together, and
+# a run made for a use (uses.py: chat, code or documents) says which, so a stopped sweep knows
+# which model and use it already finished. It also keeps what else the computer was doing when
+# the run started (background.py), so busy runs can be told apart.
 
 
 class RunResult(BaseModel):
@@ -164,6 +165,7 @@ class RunResult(BaseModel):
     kind: Literal["screening", "full", "confirm"] = "full"
     tune_id: str | None = None
     sweep_id: str | None = None
+    use: str | None = None
     repetitions: int = 1
     status: Literal["ok", "out_of_memory", "crashed"] = "ok"
     error: str | None = None

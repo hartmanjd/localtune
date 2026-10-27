@@ -433,6 +433,7 @@ def run(
         result = measure(
             engine, requested, electricity, repetitions, gpu_index=gpu, background=background
         )
+    result.use = use
     path = save_result(result)
 
     if result.status != "ok":
@@ -640,6 +641,7 @@ def tune(
             electricity,
             gpu,
             threads,
+            use=use,
         )
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
@@ -714,6 +716,7 @@ def tune_model(
     gpu: int,
     threads: int | None = None,
     sweep_id: str | None = None,
+    use: str | None = None,
 ) -> None:
     tune_id = uuid4().hex
     session.placements = {cache: session.given for cache in KV_CACHE_SIZE}
@@ -733,7 +736,7 @@ def tune_model(
         requested = requested_settings(model_file, options, model_name)
         with working(console, "tune", label, progress):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
-        result.tune_id, result.sweep_id = tune_id, sweep_id
+        result.tune_id, result.sweep_id, result.use = tune_id, sweep_id, use
         save_result(result)
         return result
 
@@ -961,7 +964,9 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
 # first guess at a GPU/RAM split (tune.py), so it doesn't crawl. The runs share a sweep_id and
 # each is saved as soon as it finishes; Ctrl+C stops the sweep with the finished runs kept, and
 # a model that fails is noted and skipped. A table at the end shows every run. With --tune,
-# every model and use gets a whole tuning session instead (tune_sweep, below).
+# every model and use gets a whole tuning session instead (tune_sweep, below). With --resume,
+# a sweep that stopped (Ctrl+C, a crash, a restart) carries on under the same sweep_id,
+# skipping the models and uses it already finished (last_sweep, below).
 
 
 @app.command()
@@ -978,6 +983,9 @@ def sweep(
     ] = None,
     tune: bool = typer.Option(
         False, "--tune", help="Tune every model for every use, like 'localtune tune'. Takes hours."
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", help="Carry on the last sweep that stopped, skipping what it finished."
     ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
@@ -1004,10 +1012,18 @@ def sweep(
 
     warn_if_busy(gpu)
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    sweep_id, planned = uuid4().hex, len(models) * len(lengths)
+    sweep_id, finished = uuid4().hex, set()
+    if resume:
+        last = last_sweep(tuned=tune)
+        if last is None:
+            console.print("There's no earlier sweep to resume, so this is a new one.")
+        else:
+            sweep_id, finished = last
+            console.print(f"Resuming the last sweep; {len(finished)} model and use pairs are done.")
     if tune:
-        tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id)
+        tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished)
         return
+    planned = max(1, len(models) * len(lengths) - len(finished))
     console.print(
         f"Benchmarking {len(models)} model{'s' if len(models) > 1 else ''} for "
         f"{', '.join(lengths)}: {planned} run{'s' if planned > 1 else ''}, "
@@ -1023,6 +1039,8 @@ def sweep(
                 done += len(lengths)
                 continue
             for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+                if (model_name or model_file.stem, use_name) in finished:
+                    continue
                 placement = guessed_split(model_file, gpu, prompt_tokens + gen_tokens)
                 options = BenchOptions(
                     prompt_tokens=prompt_tokens,
@@ -1037,7 +1055,7 @@ def sweep(
                 label = f"Run {done + 1} of {planned}: {model}, {use_name}{left}"
                 with working(console, "sweep", label, done / planned):
                     result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
-                result.sweep_id = sweep_id
+                result.sweep_id, result.use = sweep_id, use_name
                 save_result(result)
                 runs.append((use_name, result))
                 done += 1
@@ -1049,13 +1067,40 @@ def sweep(
     console.print(f"All runs saved to {results_file()}")
 
 
+# Resuming: the last sweep's saved runs say which models and uses it finished. Each run says
+# which use it was for; runs saved before that are matched to a use by their prompt and answer
+# lengths. A plain sweep has one run per model and use, so each saved one is finished. A tuning
+# sweep has a whole session per model and use, and the last one it started may have been cut
+# off, so that one is done again.
+
+
+def use_of(run: RunResult) -> str | None:
+    if run.use:
+        return run.use
+    return next((name for name, (p, g) in USES.items() if p + g == run.settings.context_size), None)
+
+
+def last_sweep(tuned: bool) -> tuple[str, set[tuple[str, str]]] | None:
+    runs = [r for r in load_results() if r.sweep_id and (r.tune_id is not None) == tuned]
+    if not runs:
+        return None
+    sweep_id = runs[-1].sweep_id
+    pairs = [(r.settings.model, use_of(r)) for r in runs if r.sweep_id == sweep_id]
+    finished = set(pairs)
+    if tuned:
+        finished.discard(pairs[-1])
+    return sweep_id, finished
+
+
 # "localtune sweep --tune": a whole tuning session (tune_model) for every model and use, one
 # after another, which can take all night. It ends with one table of what was fastest for each,
 # and how much that beat llama.cpp's usual settings.
 
 
-def tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id) -> None:
-    planned = len(models) * len(lengths)
+def tune_sweep(
+    models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished=frozenset()
+) -> None:
+    planned = max(1, len(models) * len(lengths) - len(finished))
     console.print(
         f"Tuning {len(models)} model{'s' if len(models) > 1 else ''} for {', '.join(lengths)}: "
         f"{planned} tuning session{'s' if planned > 1 else ''} of about 13 to 16 runs each, one "
@@ -1071,6 +1116,8 @@ def tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, swee
                 done += len(lengths)
                 continue
             for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+                if (model_name or model_file.stem, use_name) in finished:
+                    continue
                 left = time_left(time.monotonic() - started, done, planned)
                 console.print(f"\nSession {done + 1} of {planned}: {model}, {use_name}{left}")
                 session = TuneSession(given={"gpu_layers": None, "cpu_moe_layers": None})
@@ -1087,6 +1134,7 @@ def tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, swee
                         electricity,
                         gpu,
                         sweep_id=sweep_id,
+                        use=use_name,
                     )
                 except typer.Exit:
                     console.print(f"Nothing fit for {model}, {use_name}; moving on.")
