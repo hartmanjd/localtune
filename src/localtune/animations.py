@@ -56,8 +56,8 @@ def stack(rows: list[Text]) -> Text:
 
 # The logo: "localtune" in small ASCII lettering, four rows high, about four seconds long. Every
 # piece starts as a random dim stroke and snaps into place at its own moment, roughly left to
-# right; then a light shimmer runs across the finished word twice, and it ends with a spark
-# bursting off the last letter.
+# right; then a light shimmer sweeps across the finished word, back, and across again, and it
+# ends with a small glint at the tip of the last letter.
 
 LOGO = [
     r" _              _ _                 ",
@@ -68,19 +68,20 @@ LOGO = [
 WIDTH = len(LOGO[0])
 STROKES = "/\\|_-.'`"
 BUILD_FRAMES = 32
-SHIMMER_FRAMES = 14
-SHIMMERS = 2
+SHIMMER_FRAMES = 12
+SHIMMERS = 3
 SHINE = 0.3
-# The spark, one drawing per moment: a point of light that bursts, spreads and fades.
-SPARK = [
-    ["         ", "    *    ", "         ", "         "],
-    ["   \\|/   ", "  --*--  ", "   /|\\   ", "         "],
-    [" \\  |  / ", "--- * ---", " /  |  \\ ", "         "],
-    [".   '   .", "'   +   '", "'   .   '", "         "],
-    ["         ", "    .    ", "         ", "         "],
+# The glint, one drawing per moment, as (row, column, character) just off the tip of the "e":
+# a point of light that flares into a small cross and fades.
+TIP = (1, WIDTH)
+GLINT = [
+    [(0, 0, "*")],
+    [(0, 0, "*"), (-1, 0, "|"), (1, 0, "|"), (0, -1, "-"), (0, 1, "-")],
+    [(0, 0, "+")],
+    [(0, 0, ".")],
 ]
-SPARK_FRAMES = 3
-HOLD_FRAMES = 5
+GLINT_FRAMES = 3
+HOLD_FRAMES = 4
 
 
 def shine(frame: int, column: int) -> bool:
@@ -88,30 +89,37 @@ def shine(frame: int, column: int) -> bool:
     into = frame - BUILD_FRAMES
     if not 0 <= into < SHIMMERS * SHIMMER_FRAMES:
         return False
-    head = (into % SHIMMER_FRAMES + 1) / SHIMMER_FRAMES * (1 + SHINE)
-    return head - SHINE <= column / WIDTH < head
+    sweep, step = divmod(into, SHIMMER_FRAMES)
+    position = column / WIDTH if sweep % 2 == 0 else 1 - column / WIDTH
+    head = (step + 1) / SHIMMER_FRAMES * (1 + SHINE)
+    return head - SHINE <= position < head
+
+
+def glint(frame: int) -> dict[tuple[int, int], str]:
+    into = frame - BUILD_FRAMES - SHIMMERS * SHIMMER_FRAMES
+    if not 0 <= into < len(GLINT) * GLINT_FRAMES:
+        return {}
+    row, column = TIP
+    return {(row + up, column + side): char for up, side, char in GLINT[into // GLINT_FRAMES]}
 
 
 def logo_frame(frame: int, lands: dict[tuple[int, int], int], rng: random.Random) -> Text:
-    sparking = frame - BUILD_FRAMES - SHIMMERS * SHIMMER_FRAMES
-    spark = SPARK[sparking // SPARK_FRAMES] if 0 <= sparking < len(SPARK) * SPARK_FRAMES else None
-    flash = spark is SPARK[1]
+    light = glint(frame)
     rows = []
     for number, line in enumerate(LOGO):
         row = Text()
-        for column, char in enumerate(line):
+        for column, char in enumerate(line + "  "):
             land = lands.get((number, column))
-            if land is None or frame < land - 6:
+            if (number, column) in light:
+                spark = light[(number, column)]
+                row.append(spark, style="bold #ffffff" if spark in "*+" else f"bold {PURPLES[-1]}")
+            elif land is None or frame < land - 6:
                 row.append(" ")
             elif frame < land:
                 row.append(rng.choice(STROKES), style=PURPLES[0])
             else:
-                bright = flash or shine(frame, column)
-                shade = PURPLES[-1] if bright else purple(column / WIDTH / 2 + 0.3)
+                shade = PURPLES[-1] if shine(frame, column) else purple(column / WIDTH / 2 + 0.3)
                 row.append(char, style=f"bold {shade}")
-        if spark:
-            for char in spark[number]:
-                row.append(char, style="bold #ffffff" if char in "*+" else f"bold {PURPLES[-1]}")
         rows.append(row)
     return stack(rows)
 
@@ -124,7 +132,7 @@ def logo_scene(seed: int | None = None) -> list[Text]:
         for column, char in enumerate(line)
         if char != " "
     }
-    frames = BUILD_FRAMES + SHIMMERS * SHIMMER_FRAMES + len(SPARK) * SPARK_FRAMES + HOLD_FRAMES
+    frames = BUILD_FRAMES + SHIMMERS * SHIMMER_FRAMES + len(GLINT) * GLINT_FRAMES + HOLD_FRAMES
     return [logo_frame(frame, lands, rng) for frame in range(frames)]
 
 

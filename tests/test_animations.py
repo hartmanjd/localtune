@@ -25,7 +25,9 @@ def test_the_logo_spells_localtune_in_four_even_rows_and_assembles_itself():
     frames = logo_scene(seed=1)
     assert 70 <= len(frames) <= 90
     assert frames[0].plain.count(" ") > frames[-1].plain.count(" ")
-    assert frames[-1].plain.splitlines() == LOGO
+    assert [line.rstrip() for line in frames[-1].plain.splitlines()] == [
+        line.rstrip() for line in LOGO
+    ]
 
 
 @pytest.mark.parametrize("scene", sorted(LOADERS))
