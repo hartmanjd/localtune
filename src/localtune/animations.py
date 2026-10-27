@@ -1,13 +1,13 @@
 """The short, colorful scenes localtune plays when a command starts."""
 
-# Just for fun: each command opens with its own scene of about a second, drawn with letters in
-# the terminal, before any work starts. "localtune" on its own shows the logo with colors
-# running across it, "sweep" a broom sweeping the logo into view, "tune" a knob turning until
-# it clicks into place, "doctor" a heartbeat that ends in a check mark and "run" a speedometer
-# needle swinging up. The scenes never play while anything is measured, and they are skipped
-# when the output isn't a terminal a person is watching (a file, a test, another program), or
-# when LOCALTUNE_NO_ANIMATION is set, so they never get in the way. cli.py decides which scene
-# each command plays.
+# Just for fun: each command opens with its own scene of about a second, drawn in classic ASCII
+# art (slashes, pipes and underscores) in color, a few lines tall, before any work starts.
+# "localtune" on its own shows the logo with colors running across it, "sweep" a broom sweeping
+# the logo clean, "tune" a knob turning until it clicks into place, "doctor" a heartbeat that
+# ends with an OK and "run" a speedometer needle swinging up. The scenes never play while
+# anything is measured, and they are skipped when the output isn't a terminal a person is
+# watching (a file, a test, another program), or when LOCALTUNE_NO_ANIMATION is set, so they
+# never get in the way. cli.py decides which scene each command plays.
 
 import math
 import os
@@ -36,21 +36,17 @@ def play(console: Console, scene: str) -> None:
             live.update(frame)
 
 
-# The logo: "localtune" in block letters, five rows high. Each frame colors the letters along a
-# rainbow that shifts a little further each time, so the colors seem to run across the word.
+# The logo: "localtune" in small ASCII lettering, four rows high. Each frame colors the letters
+# along a rainbow that shifts a little further each time, so the colors seem to run across it.
 
-LETTERS = {
-    "l": ["█   ", "█   ", "█   ", "█   ", "████"],
-    "o": [" ██ ", "█  █", "█  █", "█  █", " ██ "],
-    "c": [" ███", "█   ", "█   ", "█   ", " ███"],
-    "a": [" ██ ", "█  █", "████", "█  █", "█  █"],
-    "t": ["███", " █ ", " █ ", " █ ", " █ "],
-    "u": ["█  █", "█  █", "█  █", "█  █", " ██ "],
-    "n": ["█  █", "██ █", "█ ██", "█  █", "█  █"],
-    "e": ["████", "█   ", "███ ", "█   ", "████"],
-}
-LOGO = [" ".join(LETTERS[letter][row] for letter in "localtune") for row in range(5)]
+LOGO = [
+    r" _              _ _                 ",
+    r"| |___  __ __ _| | |_ _  _ _ _  ___ ",
+    r"| / _ \/ _/ _` | |  _| || | ' \/ -_)",
+    r"|_\___/\__\__,_|_|\__|\_,_|_||_\___|",
+]
 WIDTH = len(LOGO[0])
+DUST = ".,'`"
 
 
 def rainbow(position: float) -> str:
@@ -63,13 +59,15 @@ def rainbow(position: float) -> str:
 
 def logo_frame(shift: float, upto: int = WIDTH, dust: bool = False) -> list[Text]:
     rows = []
-    for line in LOGO:
+    for number, line in enumerate(LOGO):
         row = Text()
         for column, char in enumerate(line):
             if column < upto:
-                row.append(char, style=rainbow(column / WIDTH + shift) if char != " " else "")
+                row.append(char, style=f"bold {rainbow(column / WIDTH + shift)}")
+            elif dust and char != " ":
+                row.append(DUST[(column * 7 + number * 3) % len(DUST)], style="grey50")
             else:
-                row.append("·" if dust and char != " " else " ", style="grey50")
+                row.append(" ")
         rows.append(row)
     return rows
 
@@ -82,96 +80,145 @@ def logo_scene() -> list[Text]:
     return [stack(logo_frame(step / 20)) for step in range(20)]
 
 
-# Sweep: a broom moves left to right over dusty dots, and the logo appears behind it.
+# Sweep: a broom moves left to right over the dust, and the logo appears clean behind it.
 
-BROOM = ["  ║  ", "  ║  ", "  ║  ", " ╱║╲ ", "╱╱║╲╲"]
+BROOM = ["  |  ", "  |  ", " /|\\ ", "/|||\\"]
 
 
 def sweep_scene() -> list[Text]:
     frames = []
-    for upto in range(0, WIDTH + 1, 3):
+    for upto in range(0, WIDTH + 1, 2):
         rows = []
-        for full, handle in zip(logo_frame(upto / WIDTH / 2, upto, dust=True), BROOM, strict=True):
+        for full, part in zip(logo_frame(upto / WIDTH / 2, upto, dust=True), BROOM, strict=True):
             row = full[:upto]
-            row.append(handle, style="bold #c8963e")
-            rows.append(row + full[upto + len(handle) :])
+            row.append(part, style="bold #af875f" if "|||" in part else "bold #d7af5f")
+            rows.append(row + full[upto + len(part) :])
         frames.append(stack(rows))
     frames.append(stack(logo_frame(0.5)))
     return frames
 
 
-# Tune: a knob on a scale swings past its sweet spot, back, and settles there with a click.
+# Tune: a knob turns from low to high, past its sweet spot and back, and clicks into place.
 
-SCALE = 31
+KNOB = [
+    r"  .-'''-.  ",
+    r" /       \ ",
+    r"|    o    |",
+    r" '-.___.-' ",
+]
+# Where the knob's pointer is drawn for each turn, from all the way left to all the way right.
+POINTERS = [
+    [(2, 3, "-"), (2, 4, "-")],
+    [(1, 3, "\\")],
+    [(1, 5, "|")],
+    [(1, 7, "/")],
+    [(2, 6, "-"), (2, 7, "-")],
+]
 
 
-def knob_frame(position: int, clicked: bool) -> Text:
-    row = Text("  ")
-    for spot in range(SCALE):
-        if spot == position:
-            row.append("◉", style="bold #ffd75f" if clicked else "bold #5fafff")
-        else:
-            row.append("─", style=rainbow(spot / SCALE / 2 + 0.5))
-    if clicked:
-        row.append("  click! tuned", style="bold #87d787")
-    return Text("\n").join([Text("  tuning…", style="bold"), row])
+def knob_frame(turn: int, clicked: bool) -> Text:
+    grid = [list(line) for line in KNOB]
+    for row, column, char in POINTERS[turn]:
+        grid[row][column] = char
+    pointer = {(row, column) for row, column, _ in POINTERS[turn]}
+    rows = []
+    for number, line in enumerate(grid):
+        row = Text("  ")
+        for column, char in enumerate(line):
+            if (number, column) in pointer:
+                row.append(char, style="bold #ffd75f" if clicked else "bold #ffffff")
+            else:
+                row.append(char, style=rainbow(0.55 + column / len(line) / 3))
+        if number == 1:
+            row.append("   tuning...", style="bold")
+        if number == 2 and clicked:
+            row.append("   *click*  tuned", style="bold #87d787")
+        rows.append(row)
+    return stack(rows)
 
 
 def tune_scene() -> list[Text]:
-    sweet = SCALE * 2 // 3
-    path = [0, 4, 8, 13, 18, 23, 26, 27, 25, 22, 19, 18, 19, 20, sweet, sweet]
-    frames = [knob_frame(min(spot, SCALE - 1), clicked=False) for spot in path]
-    return frames + [knob_frame(sweet, clicked=True)] * 4
+    path = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 3, 3, 2, 2, 3, 3]
+    return [knob_frame(turn, clicked=False) for turn in path] + [knob_frame(3, clicked=True)] * 5
 
 
-# Doctor: a heartbeat line runs across the screen and ends in a check mark.
+# Doctor: a heartbeat line runs across the screen and ends with an OK.
 
-BEAT = "────╮╭──╯╰╮╭─"
+BEAT = [
+    r"     /\     ",
+    r"____/  \  __",
+    r"        \/  ",
+]
 
 
 def doctor_scene() -> list[Text]:
-    line = BEAT * 3
+    lines = [part * 3 for part in BEAT]
     frames = []
-    for length in range(2, len(line) + 1, 2):
-        row = Text("  ")
-        row.append(line[:length], style="bold #ff5f87")
-        frames.append(row)
-    done = Text("  ")
-    done.append(line, style="bold #ff5f87")
-    done.append("  ✓ checking your computer", style="bold #87d787")
-    return frames + [done] * 4
-
-
-# Run: a speedometer needle swings from zero up to full speed.
-
-RADIUS = 6
-
-
-def gauge_frame(angle: float) -> Text:
-    """A half-circle dial, with the needle at angle (pi is zero speed, 0 is full speed)."""
-    width, height = RADIUS * 4 + 1, RADIUS + 1
-    grid = [[(" ", "")] * width for _ in range(height)]
-    for step in range(41):
-        a = math.pi * step / 40
-        x, y = round(RADIUS * 2 + RADIUS * 2 * math.cos(a)), round(RADIUS - RADIUS * math.sin(a))
-        grid[y][x] = ("·", rainbow(0.66 - step / 40 / 3))
-    for distance in range(1, RADIUS):
-        x = round(RADIUS * 2 + distance * 2 * math.cos(angle))
-        y = round(RADIUS - distance * math.sin(angle))
-        grid[y][x] = ("●" if distance == RADIUS - 1 else "•", "bold #ffffff")
-    grid[RADIUS][RADIUS * 2] = ("◆", "bold #ff8700")
+    for length in range(2, len(lines[0]) + 1, 2):
+        rows = []
+        for line in lines:
+            row = Text("  ")
+            row.append(line[:length], style="bold #ff5f87")
+            rows.append(row)
+        frames.append(stack(rows))
     rows = []
-    for line in grid:
+    for number, line in enumerate(lines):
         row = Text("  ")
-        for char, style in line:
-            row.append(char, style=style)
+        row.append(line, style="bold #ff5f87")
+        if number == 1:
+            row.append("  [ OK ]", style="bold #87d787")
+            row.append(" checking your computer", style="bold")
+        rows.append(row)
+    return frames + [stack(rows)] * 5
+
+
+# Run: a speedometer needle swings from zero up to full speed while the reading climbs.
+
+GAUGE = [
+    r"    _.-----._    ",
+    r"  .'         '.  ",
+    r" /      o      \ ",
+    r" 0           max ",
+]
+# Where the needle is drawn as it swings, from zero on the left to full speed on the right.
+NEEDLES = [
+    [(2, 4, "-"), (2, 5, "-"), (2, 6, "-")],
+    [(1, 5, "\\")],
+    [(1, 8, "|")],
+    [(1, 11, "/")],
+    [(2, 10, "-"), (2, 11, "-"), (2, 12, "-")],
+]
+TOP_SPEED = 120
+
+
+def gauge_frame(swing: int, reading: int) -> Text:
+    grid = [list(line) for line in GAUGE]
+    for row, column, char in NEEDLES[swing]:
+        grid[row][column] = char
+    needle = {(row, column) for row, column, _ in NEEDLES[swing]}
+    rows = []
+    for number, line in enumerate(grid):
+        row = Text("  ")
+        for column, char in enumerate(line):
+            if (number, column) in needle:
+                row.append(char, style="bold #ffffff")
+            elif char == "o":
+                row.append(char, style="bold #ff8700")
+            else:
+                row.append(char, style=rainbow(0.66 - column / len(line) / 3))
+        if number == 2:
+            row.append(f"  {reading:>3} tok/s", style="bold")
         rows.append(row)
     return stack(rows)
 
 
 def run_scene() -> list[Text]:
-    angles = [math.pi * (1 - (step / 16) ** 0.6) for step in range(17)]
-    return [gauge_frame(angle) for angle in angles] + [gauge_frame(0.0)] * 3
+    steps = 16
+    frames = [
+        gauge_frame(step * len(NEEDLES) // steps, step * TOP_SPEED // (steps - 1))
+        for step in range(steps)
+    ]
+    return frames + [gauge_frame(len(NEEDLES) - 1, TOP_SPEED)] * 4
 
 
 SCENES = {
