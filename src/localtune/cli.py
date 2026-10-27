@@ -5,7 +5,8 @@
 # This file only handles the conversation with the person: it asks other modules for the
 # actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
-# benchmarks, tune.py for the settings tuning tries) and shows the answers.
+# benchmarks, tune.py for the settings tuning tries, uses.py for the prompt lengths of a use)
+# and shows the answers.
 
 import sys
 import time
@@ -66,6 +67,7 @@ from localtune.tune import (
     run_flags,
     split_settings,
 )
+from localtune.uses import UnknownUseError, token_lengths
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -228,8 +230,15 @@ def run(
     url: str | None = typer.Option(
         None, help="-b api: the server's address, like http://localhost:11434, if not found."
     ),
-    prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
-    gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
+    use: str | None = typer.Option(
+        None, help="What the model is for: chat, code or documents. Sets the lengths below."
+    ),
+    prompt_tokens: int | None = typer.Option(
+        None, help="Length of the prompt the model reads (512 unless --use says otherwise)."
+    ),
+    gen_tokens: int | None = typer.Option(
+        None, help="How many tokens the model writes (128 unless --use says otherwise)."
+    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
     cpu_moe: int | None = typer.Option(
@@ -253,6 +262,7 @@ def run(
     ),
 ) -> None:
     """Benchmark a model with llama.cpp or a local AI server, and save the result."""
+    prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     if backend not in BACKENDS:
         console.print(f"Unknown backend {backend}. Choose from: {', '.join(BACKENDS)}")
         raise typer.Exit(1)
@@ -313,6 +323,18 @@ def run(
         raise typer.Exit(1)
     show_run(result)
     console.print(f"Saved to {path}")
+
+
+# --use picks the prompt and answer lengths for a kind of use (uses.py); --prompt-tokens and
+# --gen-tokens still win when given.
+
+
+def lengths_for(use: str | None, prompt_tokens: int | None, gen_tokens: int | None):
+    try:
+        return token_lengths(use, prompt_tokens, gen_tokens)
+    except UnknownUseError as error:
+        console.print(str(error))
+        raise typer.Exit(1) from None
 
 
 # Before llama.cpp benchmarks anything, a quick look at whether another program is already using
@@ -447,8 +469,15 @@ def tune(
         str | None,
         typer.Argument(help="The model file (.gguf) or a model downloaded with Ollama."),
     ] = None,
-    prompt_tokens: int = typer.Option(512, help="Length of the prompt the model reads."),
-    gen_tokens: int = typer.Option(128, help="How many tokens the model writes."),
+    use: str | None = typer.Option(
+        None, help="What the model is for: chat, code or documents. Sets the lengths below."
+    ),
+    prompt_tokens: int | None = typer.Option(
+        None, help="Length of the prompt the model reads (512 unless --use says otherwise)."
+    ),
+    gen_tokens: int | None = typer.Option(
+        None, help="How many tokens the model writes (128 unless --use says otherwise)."
+    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
     cpu_moe: int | None = typer.Option(
@@ -466,6 +495,8 @@ def tune(
     ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
+    given_prompt, given_gen = prompt_tokens, gen_tokens
+    prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
     warn_if_gpu_busy(gpu)
     name = model_name or model_file.name
@@ -506,7 +537,9 @@ def tune(
         console.print("Stopped. The runs that finished are saved.")
 
     fixed = {
-        "--prompt-tokens": prompt_tokens if prompt_tokens != 512 else None,
+        "--use": use,
+        "--prompt-tokens": given_prompt,
+        "--gen-tokens": given_gen,
         "--gpu-layers": placement["gpu_layers"],
         "--cpu-moe": placement.get("cpu_moe_layers"),
         "--threads": threads,
