@@ -14,7 +14,7 @@ from localtune.doctor import Check
 from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
-from localtune.results import Speed, load_results
+from localtune.results import RunResult, RunSettings, Speed, load_results
 from localtune.runners import base
 from localtune.runners.base import BackendError, EngineRun
 from localtune.runners.llamacpp import parse_output
@@ -714,6 +714,58 @@ def test_sweep_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["sweep", str(model)])
     assert "Stopped" in result.output
     assert len(load_results()) == 1
+
+
+def test_a_stopped_sweep_resumes_where_it_stopped(monkeypatch, tmp_path):
+    calls = itertools.count()
+    asked = []
+
+    def stopped_on_the_second(llama_bench, model, options, name=None):
+        if next(calls) == 1:
+            raise KeyboardInterrupt
+        asked.append(options.prompt_tokens)
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, stopped_on_the_second)
+    runner.invoke(cli.app, ["sweep", str(model)])
+    result = runner.invoke(cli.app, ["sweep", str(model), "--resume"])
+    assert "1 model and use pairs are done" in result.output
+    assert "2 runs" in result.output
+    assert asked == [512, 8000, 16000]
+    saved = load_results()
+    assert [run.use for run in saved] == ["chat", "code", "documents"]
+    assert len({run.sweep_id for run in saved}) == 1
+
+
+def test_resume_without_an_earlier_sweep_starts_a_new_one(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["sweep", str(model), "--use", "chat", "--resume"])
+    assert "no earlier sweep to resume" in result.output
+    assert len(load_results()) == 1
+
+
+def test_a_resumed_tuning_sweep_redoes_the_session_that_was_cut_off(monkeypatch, tmp_path):
+    calls = itertools.count()
+
+    def stopped_in_the_second_session(llama_bench, model, options, name=None):
+        if next(calls) == 20:
+            raise KeyboardInterrupt
+        return tuned_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, stopped_in_the_second_session)
+    sweep = ["sweep", str(model), "--use", "chat", "--use", "code", "--tune"]
+    runner.invoke(cli.app, sweep)
+    result = runner.invoke(cli.app, [*sweep, "--resume"])
+    assert "Session 1 of 1" in result.output
+    saved = load_results()
+    assert len({run.sweep_id for run in saved}) == 1
+    assert [run.use for run in saved].count("chat") == 16
+
+
+def test_runs_saved_before_uses_were_kept_are_matched_by_length():
+    settings = RunSettings(engine="llama.cpp", model="qwen3:14b", context_size=8000 + 512)
+    run = RunResult.model_construct(use=None, settings=settings)
+    assert cli.use_of(run) == "code"
 
 
 def test_sweep_can_tune_every_model_for_every_use(monkeypatch, tmp_path):
