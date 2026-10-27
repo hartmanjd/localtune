@@ -1,7 +1,8 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune run", "localtune tune", "localtune results" and "localtune monitor") starts here.
+# "localtune run", "localtune tune", "localtune sweep", "localtune results" and
+# "localtune monitor") starts here.
 # This file only handles the conversation with the person: it asks other modules for the
 # actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
@@ -42,7 +43,7 @@ from localtune.install import (
     find_tool,
     install_llama_cpp,
 )
-from localtune.ollama_models import find_ollama_model
+from localtune.ollama_models import downloaded_models, find_ollama_model
 from localtune.prices import find_price
 from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
 from localtune.runners.base import measure
@@ -72,7 +73,7 @@ from localtune.tune import (
     server_flags,
     split_settings,
 )
-from localtune.uses import UnknownUseError, token_lengths
+from localtune.uses import USES, UnknownUseError, token_lengths
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -780,6 +781,135 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
             f"Tuned is {usual_s / best_s - 1:.0%} faster than llama.cpp's usual settings "
             f"({best_s:,.1f} s per answer instead of {usual_s:,.1f} s)."
         )
+
+
+# "localtune sweep": benchmarks many models one after another, each for every chosen use
+# (uses.py), so a computer left alone overnight turns into a lot of data. With no models named
+# it takes every model downloaded with Ollama. Each run is llama.cpp's usual settings, like
+# "localtune run" without options, except that a model too big for the GPU starts from tune's
+# first guess at a GPU/RAM split (tune.py), so it doesn't crawl. The runs share a sweep_id and
+# each is saved as soon as it finishes; Ctrl+C stops the sweep with the finished runs kept, and
+# a model that fails is noted and skipped. A table at the end shows every run.
+
+
+@app.command()
+def sweep(
+    models: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="Models to benchmark. Leave out for every model downloaded with Ollama."
+        ),
+    ] = None,
+    use: Annotated[
+        list[str] | None,
+        typer.Option(help="What the models are for; repeat to test several. All three if none."),
+    ] = None,
+    repetitions: int = typer.Option(3, help="How many times each test is repeated."),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+    zip_code: str | None = typer.Option(
+        None, "--zip", help="Your US zip code, for your local electricity price."
+    ),
+    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
+    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
+    price: float | None = typer.Option(
+        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
+    ),
+) -> None:
+    """Benchmark many models one after another, like every model you have in Ollama."""
+    lengths = {name: lengths_for(name, None, None) for name in use or USES}
+    llama_bench = find_tool("llama-bench")
+    if llama_bench is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    models = models or downloaded_models()
+    if not models:
+        console.print("No models to benchmark. Name some, or download one with Ollama first, like:")
+        console.print("  ollama pull qwen3:8b", markup=False, highlight=False)
+        raise typer.Exit(1)
+
+    warn_if_busy(gpu)
+    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
+    sweep_id, planned = uuid4().hex, len(models) * len(lengths)
+    console.print(
+        f"Benchmarking {len(models)} model{'s' if len(models) > 1 else ''} for "
+        f"{', '.join(lengths)}: {planned} run{'s' if planned > 1 else ''}, "
+        "one at a time. Ctrl+C stops it and keeps the finished runs."
+    )
+    runs: list[tuple[str, RunResult]] = []
+    started, done = time.monotonic(), 0
+    try:
+        for model in models:
+            model_file, model_name = find_model_file(model)
+            if model_file is None:
+                console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
+                done += len(lengths)
+                continue
+            for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+                placement = guessed_split(model_file, gpu, prompt_tokens + gen_tokens)
+                options = BenchOptions(
+                    prompt_tokens=prompt_tokens,
+                    gen_tokens=gen_tokens,
+                    repetitions=repetitions,
+                    gpu_index=gpu,
+                    **placement,
+                )
+                engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+                requested = requested_settings(model_file, options, model_name)
+                left = time_left(time.monotonic() - started, done, planned)
+                with console.status(f"Run {done + 1} of {planned}: {model}, {use_name}{left}"):
+                    result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+                result.sweep_id = sweep_id
+                save_result(result)
+                runs.append((use_name, result))
+                done += 1
+                console.print(f"{done:>3}. {model}, {use_name}: {outcome(result)}")
+    except KeyboardInterrupt:
+        console.print("Stopped. The runs that finished are saved.")
+
+    show_sweep(runs)
+    console.print(f"All runs saved to {results_file()}")
+
+
+# A model too big for the GPU gets tune's first guess at how much of it fits beside the
+# conversation (tune.py); one that fits, a file localtune can't read or a computer without a GPU
+# gets llama.cpp's usual placement, every layer on the GPU.
+
+
+def guessed_split(model_file: Path, gpu: int, tokens: int) -> dict:
+    gpus = detect_hardware().gpus
+    if gpu >= len(gpus):
+        return {}
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError):
+        return {}
+    guess = first_guess(model_file.stat().st_size, layout, gpus[gpu].vram_gb, tokens)
+    return {} if guess is None else split_settings(guess, layout)
+
+
+def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
+    if not runs:
+        return
+    table = Table(title="Sweep results")
+    for column in ("Model", "Use"):
+        table.add_column(column)
+    for column in ("Answer time", "Decode tok/s", "Prefill tok/s", "Peak VRAM"):
+        table.add_column(column, justify="right")
+    for use_name, run in runs:
+        seconds, speed, gpu = answer_seconds(run), run.speed, run.gpu
+        if seconds is None:
+            failed = "out of GPU memory" if run.status == "out_of_memory" else "failed"
+            table.add_row(run.settings.model, use_name, failed, "", "", "")
+            continue
+        table.add_row(
+            run.settings.model,
+            use_name,
+            f"{seconds:,.1f} s",
+            f"{speed.decode_tok_s:,.1f}",
+            f"{speed.prefill_tok_s:,.0f}",
+            f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
+        )
+    console.print(table)
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
