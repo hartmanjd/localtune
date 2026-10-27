@@ -1,13 +1,13 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune run", "localtune tune", "localtune sweep", "localtune results" and
-# "localtune monitor") starts here.
+# "localtune predict", "localtune run", "localtune tune", "localtune sweep",
+# "localtune results" and "localtune monitor") starts here.
 # This file only handles the conversation with the person: it asks other modules for the
 # actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
-# benchmarks, tune.py for the settings tuning tries, uses.py for the prompt lengths of a use)
-# and shows the answers.
+# benchmarks, predict.py for estimates before a model is downloaded, tune.py for the settings
+# tuning tries, uses.py for the prompt lengths of a use) and shows the answers.
 
 import sys
 import time
@@ -46,7 +46,9 @@ from localtune.install import (
     find_tool,
     install_llama_cpp,
 )
+from localtune.models import find_model
 from localtune.ollama_models import downloaded_models, find_ollama_model
+from localtune.predict import Prediction, predict
 from localtune.prices import find_price
 from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
 from localtune.runners.base import measure
@@ -140,6 +142,85 @@ def info() -> None:
             gpu.driver_version,
         )
     console.print(gpus)
+
+
+# "localtune predict": estimates whether a model fits on this computer's GPU (or one named with
+# --gpu-name) and how fast it will write, from the model and GPU tables alone (predict.py), so
+# it works before the model is downloaded. It ends with how to measure the real speed.
+
+
+@app.command("predict")
+def predict_command(
+    model: Annotated[str, typer.Argument(help="A model's Ollama name, like qwen3:14b.")],
+    use: str | None = typer.Option(
+        None, help="What the model is for: chat, code or documents. Longer uses need more memory."
+    ),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+    gpu_name: str | None = typer.Option(
+        None, help='Estimate for another GPU instead, like "RTX 4090".'
+    ),
+) -> None:
+    """Estimate whether a model fits and how fast it will write, before downloading it."""
+    prompt_tokens, gen_tokens = lengths_for(use, None, None)
+    found = find_model(model)
+    if found is None:
+        console.print(
+            f"{model} isn't in localtune's model table, which has the 100 most downloaded "
+            "models on Ollama. Check the name on ollama.com/library.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+
+    ram_gb = None
+    if gpu_name:
+        spec = find_gpu_spec(gpu_name)
+        if spec is None:
+            console.print(f"{gpu_name} isn't in localtune's GPU table.", markup=False)
+            raise typer.Exit(1)
+    else:
+        hw = detect_hardware()
+        if gpu >= len(hw.gpus):
+            console.print(
+                'No NVIDIA GPU found. Name one to estimate for, like --gpu-name "RTX 4090".'
+            )
+            raise typer.Exit(1)
+        spec = find_gpu_spec(hw.gpus[gpu].name, hw.gpus[gpu].vram_gb)
+        if spec is None:
+            console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
+            raise typer.Exit(1)
+        ram_gb = hw.ram_gb
+
+    show_prediction(predict(*found, spec, prompt_tokens + gen_tokens, ram_gb), use)
+
+
+def show_prediction(p: Prediction, use: str | None) -> None:
+    table = Table(title=f"Estimate for {p.model} on {p.gpu}", show_header=False)
+    table.add_row("Model file", f"{p.file_gb:.1f} GB ({p.quant})")
+    table.add_row(f"Conversation ({use or 'short chat'})", f"{p.conversation_gb:.1f} GB")
+    table.add_row("GPU memory", f"{p.vram_gb:g} GB, {p.memory_bandwidth_gbs:,.0f} GB/s")
+    if p.fits_on_computer is False:
+        fits = (
+            f"[red]No[/red]: about {p.in_ram_gb:.1f} GB would have to go in RAM, more than is free"
+        )
+    elif p.in_ram_gb > 0:
+        fits = f"Partly: about {p.in_ram_gb:.1f} GB goes in RAM, which is slower"
+    else:
+        fits = "Yes, all of it"
+    table.add_row("Fits on the GPU", fits)
+    if p.decode_tok_s is not None:
+        table.add_row("Writing speed", f"about {p.decode_tok_s:,.0f} tok/s (estimate)")
+    console.print(table)
+    if p.decode_tok_s is None:
+        return
+    console.print(
+        "This is an estimate from the GPU's memory speed and the model's size, not a "
+        "measurement."
+        + (" It assumes a good GPU/RAM split, which 'localtune tune' finds." if p.in_ram_gb else "")
+    )
+    console.print("To measure it for real:")
+    if find_ollama_model(p.model) is None:
+        console.print(f"  ollama pull {p.model}", markup=False, highlight=False)
+    console.print(f"  localtune run {p.model}", markup=False, highlight=False)
 
 
 # "localtune doctor": checks everything a benchmark needs and shows what to fix. When llama.cpp
