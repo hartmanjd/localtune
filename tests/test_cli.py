@@ -713,3 +713,42 @@ def test_sweep_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["sweep", str(model)])
     assert "Stopped" in result.output
     assert len(load_results()) == 1
+
+
+def test_sweep_can_tune_every_model_for_every_use(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    result = runner.invoke(
+        cli.app, ["sweep", str(model), "--use", "chat", "--use", "code", "--tune"]
+    )
+    assert result.exit_code == 0
+    assert "Tuning 1 model for chat, code: 2 tuning sessions" in result.output
+    assert "Session 2 of 2" in result.output
+    assert "Fastest settings for each model and use" in result.output
+    assert "flash attn on, KV q8_0, micro-batch 2048" in result.output
+    assert "+15%" in result.output
+    saved = load_results()
+    assert len(saved) == 16 + 13  # code's long prompt tries flash attention off only once
+    assert len({run.sweep_id for run in saved}) == 1 and saved[0].sweep_id
+    assert len({run.tune_id for run in saved}) == 2
+
+
+def test_a_tuning_sweep_moves_on_when_nothing_fits(monkeypatch, tmp_path):
+    def out_of_memory(llama_bench, model, options, name=None):
+        raise BackendError("cudaMalloc failed", status="out_of_memory")
+
+    model = fake_run(monkeypatch, tmp_path, out_of_memory)
+    model.write_bytes(b"x" * 4800)
+    monkeypatch.setattr(
+        cli, "read_layout", lambda path: ModelLayout(layers=48, experts=128, expert_share=0.9)
+    )
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    result = runner.invoke(
+        cli.app, ["sweep", str(model), "--use", "chat", "--use", "code", "--tune"]
+    )
+    assert result.exit_code == 0
+    assert result.output.count("moving on") == 2
+    assert "nothing worked" in result.output
