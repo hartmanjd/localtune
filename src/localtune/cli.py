@@ -10,6 +10,7 @@
 # tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs) and shows the
 # answers.
 
+import csv
 import sys
 import time
 from collections.abc import Callable
@@ -51,7 +52,14 @@ from localtune.models import find_model
 from localtune.ollama_models import downloaded_models, find_ollama_model
 from localtune.predict import Prediction, estimate_for, predict
 from localtune.prices import find_price
-from localtune.results import RunResult, RunSettings, load_results, results_file, save_result
+from localtune.results import (
+    RunResult,
+    RunSettings,
+    flat_record,
+    load_results,
+    results_file,
+    save_result,
+)
 from localtune.runners.base import measure
 from localtune.runners.llamacpp import (
     KV_CACHE_TYPES,
@@ -1233,6 +1241,10 @@ def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
 def results(
     last: int = typer.Option(20, help="How many of the most recent runs to show."),
     model: str | None = typer.Option(None, help="Only show runs whose model name contains this."),
+    csv_file: Annotated[
+        Path | None,
+        typer.Option("--csv", help="Save every run to this CSV file instead, for Excel or pandas."),
+    ] = None,
 ) -> None:
     """Show your saved benchmark runs."""
     runs = load_results()
@@ -1240,6 +1252,10 @@ def results(
         runs = [r for r in runs if model.lower() in r.settings.model.lower()]
     if not runs:
         console.print("No saved runs yet. Benchmark a model with 'localtune run'.")
+        return
+    if csv_file:
+        save_csv(runs, csv_file)
+        console.print(f"Saved {len(runs)} run{'s' if len(runs) > 1 else ''} to {csv_file}")
         return
     shown = runs[-last:]
 
@@ -1255,6 +1271,21 @@ def results(
         table.add_row(*result_row(run))
     console.print(table)
     console.print(f"From {results_file()}")
+
+
+# --csv: every run as one row (results.py), with predict's estimate beside the measured speeds.
+# Runs saved by older versions lack some columns, which stay empty. The file starts with a mark
+# that tells Excel it is UTF-8, which pandas reads as well.
+
+
+def save_csv(runs: list[RunResult], path: Path) -> None:
+    rows = [flat_record(run) | {"estimate.decode_tok_s": estimate_for(run)} for run in runs]
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 RESULT_LABELS = {

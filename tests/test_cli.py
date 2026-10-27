@@ -2,6 +2,7 @@
 # hardware and GPU readings, so they check what gets shown without depending on the machine
 # running them.
 
+import csv
 import itertools
 from pathlib import Path
 
@@ -821,3 +822,19 @@ def test_run_shows_the_estimate_beside_the_measured_speed(monkeypatch, tmp_path)
     result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
     assert "Decode estimate" in result.output
     assert "from 'localtune predict'" in result.output
+
+
+def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
+    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    path = tmp_path / "runs.csv"
+    result = runner.invoke(cli.app, ["results", "--csv", str(path)])
+    assert "Saved 2 runs" in result.output
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    assert rows[0]["speed.decode_tok_s"] == "133.2"
+    assert rows[0]["hardware.gpu.name"] == "NVIDIA GeForce RTX 4070 Ti SUPER"
+    assert "estimate.decode_tok_s" in rows[0]
