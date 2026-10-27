@@ -132,13 +132,9 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
     )
 
 
-# Checking that the GPU is free before a benchmark. Another program using it (a game, a video
-# or video call, or Ollama keeping a model loaded after an answer) takes memory and time from
-# the model being measured, so the results come out slower than they should. A few quick
-# readings show whether the GPU is already working or already holding a lot of memory; the
-# desktop alone uses well under OTHER_VRAM_GB.
-
-OTHER_VRAM_GB = 2.0
+# What the GPU is already doing before a benchmark: a few quick readings of how busy it is,
+# how much memory other programs hold and how much power it draws. background.py saves them
+# with the run and warns when another program is in the way.
 
 
 def other_use(
@@ -153,23 +149,14 @@ def other_use(
             time.sleep(interval_s)
     if not samples:
         return None
+    powers = [s.power_w for s in samples if s.power_w is not None]
     return GpuSample(
         time_s=samples[-1].time_s,
-        power_w=None,
+        power_w=sum(powers) / len(powers) if powers else None,
         vram_used_gb=min(s.vram_used_gb for s in samples),
         utilization_pct=sum(s.utilization_pct for s in samples) / len(samples),
         temperature_c=max(s.temperature_c for s in samples),
     )
-
-
-def busy_reason(sample: GpuSample | None) -> str | None:
-    if sample is None:
-        return None
-    if sample.utilization_pct >= BUSY_UTILIZATION_PCT:
-        return f"the GPU is already {sample.utilization_pct:.0f}% busy"
-    if sample.vram_used_gb >= OTHER_VRAM_GB:
-        return f"{sample.vram_used_gb:.1f} GB of the GPU's memory is already in use"
-    return None
 
 
 # The background watcher. Starting it takes the baseline reading and launches a helper thread

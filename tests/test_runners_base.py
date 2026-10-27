@@ -6,6 +6,7 @@ import itertools
 
 import pytest
 
+from localtune.background import Background
 from localtune.cost import ElectricityPrice
 from localtune.gpu_monitor import GpuMonitor, GpuSample
 from localtune.hardware import GpuInfo, HardwareInfo
@@ -88,6 +89,16 @@ def test_a_run_keeps_the_facts_of_its_model_and_gpu(monkeypatch):
     assert result.model_facts.file_bytes == 9_276_184_896
     assert result.gpu_facts.name == "RTX 4070 Ti SUPER"
     assert result.gpu_facts.memory_bandwidth_gbs > 0
+
+
+def test_a_run_keeps_what_else_the_computer_was_doing():
+    busy = Background(gpu_utilization_pct=60, cpu_load_pct=30)
+    result = measure(
+        engine(busy_s=1), ASKED, PRICE, repetitions=1, monitor=busy_gpu, background=busy
+    )
+    assert result.background == busy
+    quiet = measure(engine(busy_s=1), ASKED, PRICE, repetitions=1, monitor=busy_gpu)
+    assert quiet.background.cpu_load_pct == 3
 
 
 def test_unknown_models_and_gpus_leave_their_facts_empty(monkeypatch):

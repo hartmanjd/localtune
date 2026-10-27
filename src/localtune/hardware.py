@@ -117,7 +117,8 @@ def read_text(path: str) -> str:
 # full name in the registry. Both only exist on Windows, so they are only looked up there.
 
 
-def windows_ram_gb() -> float | None:
+def windows_memory() -> tuple[int, int] | None:
+    """The computer's total and still available RAM, in bytes."""
     import ctypes
 
     class MemoryStatus(ctypes.Structure):
@@ -136,7 +137,12 @@ def windows_ram_gb() -> float | None:
     status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
         return None
-    return round(status.total_physical / 1024**3, 1)
+    return status.total_physical, status.available_physical
+
+
+def windows_ram_gb() -> float | None:
+    memory = windows_memory()
+    return round(memory[0] / 1024**3, 1) if memory else None
 
 
 def windows_cpu_name() -> str | None:
