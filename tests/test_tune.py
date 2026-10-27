@@ -17,6 +17,8 @@ from localtune.tune import (
     find_best_split,
     first_guess,
     run_flags,
+    server_context,
+    server_flags,
     split_settings,
 )
 
@@ -92,6 +94,22 @@ def test_finds_the_run_with_llama_cpps_usual_settings():
 def test_the_winner_can_be_run_again():
     run = a_run(60.0, flash_attention=True, kv_cache_k="q8_0", ubatch_size=1024, gpu_layers=-1)
     assert run_flags(run) == "--flash-attn --kv-cache q8_0 --ubatch-size 1024"
+
+
+def test_the_winner_becomes_a_llama_server_command():
+    run = a_run(60.0, flash_attention=True, kv_cache_k="q8_0", ubatch_size=1024)
+    fits = {"gpu_layers": None, "cpu_moe_layers": None}
+    assert server_flags(run, fits, 640) == "-c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 1024"
+    split = {"gpu_layers": 49, "cpu_moe_layers": 6}
+    flags = server_flags(run, split, 640, threads=8, gpu=1)
+    assert flags.startswith("-c 4096 -ngl 49 --n-cpu-moe 6 -fa on")
+    assert flags.endswith("-t 8 -mg 1")
+
+
+def test_the_server_gets_room_for_the_tested_conversation():
+    assert server_context(768) == 4096
+    assert server_context(16256) == 16384
+    assert server_context(8192) == 8192
 
 
 def test_settings_are_described_in_plain_words():
