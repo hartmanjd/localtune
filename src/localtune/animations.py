@@ -70,6 +70,7 @@ STROKES = "/\\|_-.'`"
 BUILD_FRAMES = 32
 SHIMMER_FRAMES = 12
 SHINE = 0.3
+SHINE_COLOR = "#ffffff"
 # Each shimmer as (when it starts, after the build; where it starts and ends, from 0 at the left
 # edge to 1 at the right, a little past each so it slides fully off): across and back, and
 # halfway back it splits, one half running on to the left, the other back to the right, so they
@@ -92,6 +93,12 @@ GLINT = [
 ]
 GLINT_FRAMES = 3
 HOLD_FRAMES = 4
+
+
+def logo_shade(column: int) -> str:
+    """The logo's own color: deep purple at the left, brighter toward the right, never so light
+    that the shimmer gets lost in it."""
+    return PURPLES[1 + column * 3 // WIDTH]
 
 
 def shine(frame: int, column: int) -> bool:
@@ -129,7 +136,7 @@ def logo_frame(frame: int, lands: dict[tuple[int, int], int], rng: random.Random
             elif frame < land:
                 row.append(rng.choice(STROKES), style=PURPLES[0])
             else:
-                shade = PURPLES[-1] if shine(frame, column) else purple(column / WIDTH / 2 + 0.3)
+                shade = SHINE_COLOR if shine(frame, column) else logo_shade(column)
                 row.append(char, style=f"bold {shade}")
         rows.append(row)
     return stack(rows)
