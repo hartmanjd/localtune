@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from localtune.ollama_models import find_ollama_model, manifest_path
+from localtune.ollama_models import downloaded_models, find_ollama_model, manifest_path
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def ollama(tmp_path, monkeypatch):
 
 def add_model(folder, manifest_parts, digest="sha256:abc123", blob=True):
     manifest = folder.joinpath("manifests", *manifest_parts)
-    manifest.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     layers = [
         {"mediaType": "application/vnd.ollama.image.template", "digest": "sha256:t"},
         {"mediaType": "application/vnd.ollama.image.model", "digest": digest},
@@ -58,3 +58,20 @@ def test_unknown_or_missing_models_are_not_found(ollama):
 @pytest.mark.parametrize("name", ["", ":14b", "../../etc:x", "qwen3:../x"])
 def test_odd_names_are_not_looked_up(ollama, name):
     assert manifest_path(name) is None
+
+
+def test_lists_every_downloaded_model_once(ollama):
+    add_model(ollama, ["registry.ollama.ai", "library", "qwen3", "8b"], digest="sha256:a")
+    add_model(ollama, ["registry.ollama.ai", "library", "qwen3", "latest"], digest="sha256:a")
+    add_model(ollama, ["registry.ollama.ai", "library", "qwen3", "14b"], digest="sha256:b")
+    add_model(ollama, ["hf.co", "bartowski", "Qwen3-8B-GGUF", "Q4_K_M"], digest="sha256:c")
+    add_model(ollama, ["registry.ollama.ai", "library", "cloudy", "cloud"], blob=False)
+    assert downloaded_models() == [
+        "hf.co/bartowski/Qwen3-8B-GGUF:Q4_K_M",
+        "qwen3:14b",
+        "qwen3:8b",
+    ]
+
+
+def test_no_ollama_folder_means_no_models(ollama):
+    assert downloaded_models() == []

@@ -51,3 +51,28 @@ def find_ollama_model(name: str) -> Path | None:
         return None
     model_file = models_dir() / "blobs" / digest.replace(":", "-")
     return model_file if model_file.is_file() else None
+
+
+# Every model downloaded with Ollama, by the name Ollama shows for it, for "localtune sweep".
+# One file can have several names (qwen3:latest is often qwen3:8b), so each file is listed once.
+# Models that only run in Ollama's cloud have no model file and are left out.
+
+
+def downloaded_models() -> list[str]:
+    root = models_dir() / "manifests"
+    names, seen = [], set()
+    for manifest in sorted(root.glob("*/*/*/*")):
+        if not manifest.is_file():
+            continue
+        registry, namespace, model, tag = manifest.relative_to(root).parts
+        if registry != DEFAULT_REGISTRY:
+            name = f"{registry}/{namespace}/{model}:{tag}"
+        elif namespace != DEFAULT_NAMESPACE:
+            name = f"{namespace}/{model}:{tag}"
+        else:
+            name = f"{model}:{tag}"
+        model_file = find_ollama_model(name)
+        if model_file is not None and model_file not in seen:
+            seen.add(model_file)
+            names.append(name)
+    return names
