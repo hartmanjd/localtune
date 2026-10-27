@@ -1,6 +1,6 @@
 # Tests for the estimates "localtune predict" gives before a model is downloaded. They use the
-# real model and GPU tables, and check the estimates against speeds measured on an RTX 4070 Ti
-# SUPER: qwen3:14b wrote 62 to 64 tok/s, and qwen3:30b, split between GPU and RAM, 134.
+# real model and GPU tables. On an RTX 4070 Ti SUPER (672 GB/s), qwen3:14b's 9,276,184,896-byte
+# file gives 0.55 x 672 / 9.276 = 39.8 tok/s by hand.
 
 import pytest
 from typer.testing import CliRunner
@@ -15,17 +15,21 @@ runner = CliRunner()
 GPU = find_gpu_spec("RTX 4070 Ti SUPER", 16)
 
 
-def test_a_model_that_fits_writes_near_its_measured_speed():
+def test_a_model_that_fits_writes_at_bandwidth_over_size():
     p = predict(*find_model("qwen3:14b"), GPU, tokens=768, ram_gb=32)
     assert p.in_ram_gb == 0
     assert p.fits_on_computer
-    assert p.decode_tok_s == pytest.approx(63, rel=0.1)
+    assert p.decode_tok_s == pytest.approx(39.8, abs=0.1)
 
 
 def test_a_mixture_of_experts_model_too_big_for_the_gpu_is_split_with_ram():
-    p = predict(*find_model("qwen3:30b"), GPU, tokens=768, ram_gb=32)
+    model, file = find_model("qwen3:30b")
+    p = predict(model, file, GPU, tokens=768, ram_gb=32)
+    used_per_word = file.size_bytes * model.active_params / model.params
+    all_on_gpu = 0.55 * 672e9 / used_per_word
+    all_in_ram = 0.55 * 51.2e9 / used_per_word
     assert p.in_ram_gb > 1
-    assert p.decode_tok_s == pytest.approx(134, rel=0.15)
+    assert all_in_ram < p.decode_tok_s < all_on_gpu
 
 
 def test_a_longer_conversation_leaves_less_room_for_the_model():
@@ -46,7 +50,7 @@ def test_predict_for_a_named_gpu():
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
     assert result.exit_code == 0
     assert "Yes, all of it" in result.output
-    assert "about 62 tok/s" in result.output
+    assert "about 40 tok/s" in result.output
     assert "localtune run qwen3:14b" in result.output
 
 

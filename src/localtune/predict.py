@@ -9,8 +9,10 @@
 #
 # Writing speed (decode) is set by memory: every new word reads the part of the model it uses
 # once, so the GPU's memory bandwidth divided by those bytes is the most words per second it
-# can write. A real engine reaches about EFFICIENCY of that (qwen3:14b measured 62 to 64 tok/s
-# on an RTX 4070 Ti SUPER, where the limit is 72). Reading the prompt (prefill) is limited by
+# can write. A real engine only reaches part of that, EFFICIENCY, the same default llmfit uses
+# in its estimate (github.com/AlexsJones/llmfit, docs/how-it-works.md). It is a stand-in until
+# the trained prediction model exists, and it isn't fitted to localtune's own runs, so the
+# trained model can be compared against it fairly. Reading the prompt (prefill) is limited by
 # compute instead, which the tables can't estimate well yet, so it isn't predicted.
 
 from pydantic import BaseModel
@@ -20,18 +22,19 @@ from localtune.models import ModelFile, ModelSpec
 from localtune.tune import RESERVED_GB
 
 GIB = 1024**3
-EFFICIENCY = 0.85
+EFFICIENCY = 0.55
 
 
 # A model bigger than the GPU's memory still runs: llama.cpp keeps the rest in RAM, where the
-# CPU reads it far more slowly. That part is read at RAM_BANDWIDTH_GBS, a typical speed for a
-# home PC's memory, so the estimate assumes the model is split well between the two (which
+# CPU reads it far more slowly. That part is read at RAM_BANDWIDTH_GBS, the speed of two sticks
+# of DDR4-3200 memory on paper (2 x 3,200 million transfers x 8 bytes), the slowest common
+# memory in home PCs today, so the estimate assumes the model is split well between the two (which
 # "localtune tune" finds). In a mixture-of-experts model, the part moved to RAM is experts, and
 # each word only uses a few of them, so the RAM part slows it down much less. RAM_RESERVED_GB
 # is left for the operating system and other programs; a model that doesn't fit in what's left
 # of the RAM either can't run on the computer at all.
 
-RAM_BANDWIDTH_GBS = 50
+RAM_BANDWIDTH_GBS = 51.2
 RAM_RESERVED_GB = 4
 
 
