@@ -52,8 +52,12 @@ from localtune.runners.llamacpp import (
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
 from localtune.tune import (
+    DEFAULTS,
+    NOISE,
     answer_seconds,
+    as_good_as,
     combinations,
+    default_run,
     describe,
     describe_split,
     fastest,
@@ -487,7 +491,7 @@ def tune(
         "--threads": threads,
     }
     fixed_flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
-    if not show_tune(runs, f"{model}{fixed_flags}"):
+    if not show_tune(runs, f"{model}{fixed_flags}", planned=len(combos)):
         raise typer.Exit(1)
     console.print(f"All runs saved to {results_file()}")
 
@@ -552,7 +556,7 @@ def outcome(result: RunResult) -> str:
     return f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
 
 
-def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
+def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -> bool:
     best = fastest(runs)
     if best is None:
         if runs:
@@ -586,7 +590,15 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
     s = best.settings
     winner = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
     winner["ubatch_size"] = s.ubatch_size
-    console.print(f"Fastest on this computer: {describe(winner)}.")
+    if len(runs) < planned:
+        console.print(f"Fastest so far: {describe(winner)}.")
+        console.print(
+            f"Only {len(runs)} of {planned} combinations were tried, so a faster one may be "
+            "among the rest."
+        )
+    else:
+        console.print(f"Fastest on this computer: {describe(winner)}.")
+    show_trust(best, worked, runs)
     console.print("To use these settings:")
     command = f"  localtune run {model_and_fixed_flags} {run_flags(best)}"
     console.print(command, markup=False, highlight=False, soft_wrap=True)
@@ -595,6 +607,35 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str) -> bool:
             f"A {s.kv_cache_k} KV cache saves memory but can make answers slightly worse than f16."
         )
     return True
+
+
+# How much the winner can be trusted (tune.py): settings within measurement noise of it are just
+# as good, and the gain only counts against llama.cpp's usual settings.
+
+
+def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) -> None:
+    percent = f"{NOISE:.0%}"
+    ties = as_good_as(best, worked)
+    if ties:
+        others = "1 other setting is" if len(ties) == 1 else f"{len(ties)} other settings are"
+        console.print(
+            f"{others} within {percent} of it, about the difference between two runs of the "
+            "same settings, so they are just as good."
+        )
+    usual, best_s = default_run(runs), answer_seconds(best)
+    usual_s = answer_seconds(usual) if usual else None
+    if usual is best:
+        console.print("These are llama.cpp's usual settings, so there's nothing to change.")
+    elif usual_s is not None and usual_s <= best_s * (1 + NOISE):
+        console.print(
+            f"Tuned is within {percent} of llama.cpp's usual settings ({describe(DEFAULTS)}), "
+            "so tuning these made no real difference."
+        )
+    elif usual_s is not None:
+        console.print(
+            f"Tuned is {usual_s / best_s - 1:.0%} faster than llama.cpp's usual settings "
+            f"({best_s:,.1f} s per answer instead of {usual_s:,.1f} s)."
+        )
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
