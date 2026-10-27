@@ -8,12 +8,24 @@ import pytest
 
 from localtune.cost import ElectricityPrice
 from localtune.gpu_monitor import GpuMonitor, GpuSample
+from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import RunSettings, Speed
+from localtune.runners import base
 from localtune.runners.base import BackendError, EngineRun, measure
 
 PRICE = ElectricityPrice(per_kwh=0.20, kind="yours", source="your price")
 ASKED = RunSettings(engine="test", model="tiny")
 USED = ASKED.model_copy(update={"quant": "Q4_0"})
+PC_WITH_GPU = HardwareInfo(
+    os="Windows 11",
+    is_wsl=False,
+    cpu_name="CPU",
+    cpu_threads=16,
+    ram_gb=64.0,
+    gpus=[
+        GpuInfo(index=0, name="NVIDIA GeForce RTX 4070 Ti SUPER", vram_gb=16.0, driver_version="1")
+    ],
+)
 
 
 @pytest.fixture(autouse=True)
@@ -59,3 +71,28 @@ def test_a_failed_run_keeps_what_was_asked_and_why():
     assert result.settings == ASKED
     assert result.speed is None
     assert result.energy.kwh_per_million_tokens is None
+
+
+def test_a_run_keeps_the_facts_of_its_model_and_gpu(monkeypatch):
+    monkeypatch.setattr(base, "detect_hardware", lambda: PC_WITH_GPU)
+    asked = RunSettings(engine="llama.cpp", model="qwen3:14b")
+    result = measure(
+        lambda: EngineRun(settings=asked, speed=Speed(prompt_tokens=1, generated_tokens=1)),
+        asked,
+        PRICE,
+        repetitions=1,
+        monitor=busy_gpu,
+    )
+    assert result.model_facts.params == 14_768_307_200
+    assert result.model_facts.quant == "Q4_K_M"
+    assert result.model_facts.file_bytes == 9_276_184_896
+    assert result.gpu_facts.name == "RTX 4070 Ti SUPER"
+    assert result.gpu_facts.memory_bandwidth_gbs > 0
+
+
+def test_unknown_models_and_gpus_leave_their_facts_empty(monkeypatch):
+    monkeypatch.setattr(
+        base, "detect_hardware", lambda: PC_WITH_GPU.model_copy(update={"gpus": []})
+    )
+    result = measure(engine(busy_s=1), ASKED, PRICE, repetitions=1, monitor=busy_gpu)
+    assert result.model_facts is None and result.gpu_facts is None

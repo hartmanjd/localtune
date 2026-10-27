@@ -3,8 +3,8 @@
 # A runner only knows how to drive one engine and read its numbers. Everything else about a
 # benchmark is the same for every engine and lives here: the GPU is watched while the engine
 # runs (gpu_monitor.py), the energy is priced (cost.py), the computer is described
-# (hardware.py), and it all becomes one RunResult (results.py). A run that fails becomes a
-# record too, with what went wrong.
+# (hardware.py), the model's and GPU's facts are looked up, and it all becomes one RunResult
+# (results.py). A run that fails becomes a record too, with what went wrong.
 
 from collections.abc import Callable
 from typing import Literal
@@ -14,7 +14,15 @@ from pydantic import BaseModel
 from localtune.cost import ElectricityPrice
 from localtune.gpu_monitor import GpuMonitor
 from localtune.hardware import detect_hardware
-from localtune.results import RunResult, RunSettings, Speed, energy_and_cost, rig_id
+from localtune.results import (
+    RunResult,
+    RunSettings,
+    Speed,
+    energy_and_cost,
+    gpu_facts,
+    model_facts,
+    rig_id,
+)
 
 
 class BackendError(Exception):
@@ -48,6 +56,7 @@ def measure(
         except BackendError as failure:
             status, error = failure.status, str(failure)
     gpu = gpu_monitor.summary()
+    hardware = detect_hardware()
 
     return RunResult(
         rig_id=rig_id(),
@@ -55,8 +64,10 @@ def measure(
         status=status,
         error=error,
         settings=settings,
-        hardware=detect_hardware(),
+        hardware=hardware,
         gpu_index=gpu_index,
+        model_facts=model_facts(settings.model),
+        gpu_facts=gpu_facts(hardware, gpu_index),
         speed=speed,
         gpu=gpu,
         energy=energy_and_cost(gpu, speed, price),

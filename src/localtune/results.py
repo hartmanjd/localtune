@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field, ValidationError
 from localtune import __version__
 from localtune.cost import ElectricityPrice, energy_cost
 from localtune.gpu_monitor import GpuSummary
+from localtune.gpus import GpuSpec, find_gpu_spec
 from localtune.hardware import HardwareInfo
+from localtune.models import find_model
 
 # Bumped whenever the shape of RunResult changes in a way older records don't match, so code
 # reading the dataset later can tell old and new records apart.
@@ -102,6 +104,45 @@ def energy_and_cost(
     )
 
 
+# The facts about the model and the GPU that set how fast a run can be, saved with it so each
+# run is a complete example for the prediction model: the model's size, how many of its
+# parameters each word uses, its layers and attention heads and the exact file that ran
+# (models.py), and the GPU's memory bandwidth and compute (gpus.py). They come from the tables
+# shipped with localtune, so a model or GPU that isn't in them leaves these empty.
+
+
+class ModelFacts(BaseModel):
+    name: str
+    family: str
+    architecture: str
+    params: int
+    active_params: int
+    layers: int
+    kv_heads: int
+    head_dim: int
+    context_length: int | None
+    experts: int | None
+    experts_used: int | None
+    quant: str
+    file_bytes: int
+
+
+def model_facts(name: str) -> ModelFacts | None:
+    found = find_model(name)
+    if found is None:
+        return None
+    model, file = found
+    facts = model.model_dump(exclude={"files", "popularity_rank", "pulls", "latest"})
+    return ModelFacts(**facts, quant=file.quant, file_bytes=file.size_bytes)
+
+
+def gpu_facts(hardware: HardwareInfo, gpu_index: int) -> GpuSpec | None:
+    if gpu_index >= len(hardware.gpus):
+        return None
+    gpu = hardware.gpus[gpu_index]
+    return find_gpu_spec(gpu.name, gpu.vram_gb)
+
+
 # One saved run. Besides the groups above it records when and by which localtune version it
 # was measured, which machine ran it (rig_id, a random ID with nothing personal in it, so many
 # runs from one computer can be told apart from runs on others), what kind of run it was
@@ -124,6 +165,8 @@ class RunResult(BaseModel):
     settings: RunSettings
     hardware: HardwareInfo
     gpu_index: int = 0
+    model_facts: ModelFacts | None = None
+    gpu_facts: GpuSpec | None = None
     speed: Speed | None = None
     gpu: GpuSummary | None = None
     energy: EnergyCost
