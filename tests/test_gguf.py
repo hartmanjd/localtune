@@ -58,6 +58,17 @@ def test_reads_how_much_memory_each_token_of_a_conversation_takes(tmp_path):
     assert read_layout(model).kv_bytes_per_token == 8 * (128 + 128) * 2 * 40
 
 
+def test_a_hybrid_model_only_counts_its_attention_layers(tmp_path):
+    # Qwen3.5-style: attention in every 4th of 65 layers (16 of them), 4 KV heads of 256 numbers.
+    model = tmp_path / "hybrid.gguf"
+    facts = {"general.architecture": "qwen35", "qwen35.block_count": 65}
+    facts |= {"qwen35.attention.head_count": 24, "qwen35.attention.head_count_kv": 4}
+    facts |= {"qwen35.attention.key_length": 256, "qwen35.attention.value_length": 256}
+    facts |= {"qwen35.full_attention_interval": 4}
+    gguf_file(model, facts, {"output.weight": (64, 10)})
+    assert read_layout(model).kv_bytes_per_token == 4 * (256 + 256) * 2 * 16
+
+
 def test_without_head_counts_the_conversation_memory_is_unknown(tmp_path):
     model = tmp_path / "dense.gguf"
     facts = {"general.architecture": "llama", "llama.block_count": 32}
