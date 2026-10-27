@@ -27,12 +27,13 @@ from rich.progress import (
 from rich.table import Table
 
 from localtune import __version__
+from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
-from localtune.gpu_monitor import GpuMonitor, busy_reason, other_use, read_sample
+from localtune.gpu_monitor import GpuMonitor
 from localtune.gpus import find_gpu_spec
-from localtune.hardware import detect_hardware, find_nvidia_smi
+from localtune.hardware import detect_hardware
 from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
@@ -293,9 +294,10 @@ def run(
         engine = partial(run_web_api, server, model_name, options)
         requested = web_api_settings(server, model_name, options)
         label = f"Benchmarking {model_name} in {server.name} at {server.url}..."
+        background = None  # the server holds its model on the GPU, so no warning
     else:
         llama_bench, model_file, model_name = prepare_llama_cpp(model, kv_cache)
-        warn_if_gpu_busy(gpu)
+        background = warn_if_busy(gpu)
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -315,7 +317,9 @@ def run(
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     with console.status(label):
-        result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+        result = measure(
+            engine, requested, electricity, repetitions, gpu_index=gpu, background=background
+        )
     path = save_result(result)
 
     if result.status != "ok":
@@ -339,23 +343,24 @@ def lengths_for(use: str | None, prompt_tokens: int | None, gen_tokens: int | No
         raise typer.Exit(1) from None
 
 
-# Before llama.cpp benchmarks anything, a quick look at whether another program is already using
-# the GPU (gpu_monitor.py), since that makes every result slower than it should be. It only
-# warns: the person may have a good reason, and the run still goes ahead.
+# Before llama.cpp benchmarks anything, a quick look at what else the computer is doing
+# (background.py), since another program on the GPU or CPU makes every result slower than it
+# should be. It only warns: the person may have a good reason, and the run still goes ahead.
+# The same reading is saved with the run.
 
 
-def warn_if_gpu_busy(gpu: int) -> None:
-    nvidia_smi = find_nvidia_smi()
-    if nvidia_smi is None:
-        return
-    reason = busy_reason(other_use(lambda: read_sample(nvidia_smi, gpu)))
-    if reason:
+def warn_if_busy(gpu: int) -> Background:
+    background = read_background(gpu)
+    reasons = busy_reasons(background)
+    if reasons:
         console.print(
-            f"[yellow]Heads-up: {reason}.[/yellow] Another program is using the GPU (like a "
-            "game, a video or video call, or Ollama keeping a model loaded), so these results "
-            "may be slower than they should be. For trustworthy numbers, close it first. "
-            "'ollama ps' shows a model Ollama has loaded, and 'ollama stop MODEL' frees it."
+            f"[yellow]Heads-up: {' and '.join(reasons)}.[/yellow] Another program is using the "
+            "computer (like a game, a video or video call, or Ollama keeping a model loaded), "
+            "so these results may be slower than they should be. For trustworthy numbers, "
+            "close it first. 'ollama ps' shows a model Ollama has loaded, and 'ollama stop "
+            "MODEL' frees it."
         )
+    return background
 
 
 # For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which
@@ -440,7 +445,11 @@ def show_run(result: RunResult) -> None:
     if gpu is not None:
         table.add_row("Peak VRAM", f"{gpu.peak_vram_gb:.1f} GB")
         if gpu.avg_power_w is not None:
-            table.add_row("Power", f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak")
+            power = f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak"
+            idle = result.background.gpu_power_w if result.background else None
+            if idle is not None:
+                power += f" ({idle:.0f} W before the run)"
+            table.add_row("Power", power)
     if energy.kwh is not None:
         table.add_row(
             "Energy",
@@ -500,7 +509,7 @@ def tune(
     given_prompt, given_gen = prompt_tokens, gen_tokens
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
-    warn_if_gpu_busy(gpu)
+    warn_if_busy(gpu)
     name = model_name or model_file.name
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     tune_id, started = uuid4().hex, time.monotonic()

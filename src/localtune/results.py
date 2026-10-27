@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, ValidationError
 
 from localtune import __version__
+from localtune.background import Background
 from localtune.cost import ElectricityPrice, energy_cost
 from localtune.gpu_monitor import GpuSummary
 from localtune.gpus import GpuSpec, find_gpu_spec
@@ -148,7 +149,8 @@ def gpu_facts(hardware: HardwareInfo, gpu_index: int) -> GpuSpec | None:
 # runs from one computer can be told apart from runs on others), what kind of run it was
 # (a quick screening try, a full measurement or a final confirmation), whether it worked, and,
 # for runs made by "localtune tune", which tuning session it belonged to (tune_id), so the runs
-# that only differ in their settings can be compared with each other.
+# that only differ in their settings can be compared with each other. It also keeps what else
+# the computer was doing when the run started (background.py), so busy runs can be told apart.
 
 
 class RunResult(BaseModel):
@@ -169,6 +171,7 @@ class RunResult(BaseModel):
     gpu_facts: GpuSpec | None = None
     speed: Speed | None = None
     gpu: GpuSummary | None = None
+    background: Background | None = None
     energy: EnergyCost
 
 

@@ -9,6 +9,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from localtune import cli
+from localtune.background import Background
 from localtune.doctor import Check
 from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuMonitor, GpuSample
@@ -231,16 +232,18 @@ def test_run_refuses_an_unknown_use(monkeypatch, tmp_path):
     assert "Unknown use poems" in result.output
 
 
-def test_run_warns_when_another_program_is_using_the_gpu(monkeypatch, tmp_path):
+def test_run_warns_and_notes_when_another_program_is_busy(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, example_run)
-    busy = GpuSample(time_s=0, power_w=None, vram_used_gb=9.3, utilization_pct=0, temperature_c=50)
-    monkeypatch.setattr(cli, "find_nvidia_smi", lambda: Path("nvidia-smi"))
-    monkeypatch.setattr(cli, "other_use", lambda reader: busy)
+    busy = Background(gpu_utilization_pct=0, gpu_vram_used_gb=9.3, cpu_load_pct=40)
+    monkeypatch.setattr(cli, "read_background", lambda gpu_index=0: busy)
     wide_terminal(monkeypatch)
     result = runner.invoke(cli.app, ["run", str(model)])
-    assert "9.3 GB of the GPU's memory is already in use" in result.output
+    assert "9.3 GB of the GPU's memory is already in use and the CPU is already 40% busy" in (
+        result.output
+    )
     assert "ollama stop" in result.output
-    assert result.exit_code == 0 and len(load_results()) == 1
+    assert result.exit_code == 0
+    assert load_results()[0].background == busy
 
 
 def test_run_saves_a_failed_run(monkeypatch, tmp_path):
