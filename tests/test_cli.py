@@ -405,9 +405,23 @@ def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_pat
     assert "out of GPU memory" in result.output
     assert "Fastest on this computer: flash attn on, KV q8_0, micro-batch 2048." in result.output
     assert f"localtune run {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048" in result.output
+    assert "Tuned is 15% faster than llama.cpp's usual settings" in result.output
     saved = load_results()
     assert len(saved) == 16
     assert len({run.tune_id for run in saved}) == 1 and saved[0].tune_id
+
+
+def test_tune_says_when_tuning_made_no_real_difference(monkeypatch, tmp_path):
+    def all_the_same(llama_bench, model, options, name=None):
+        run = tuned_run(llama_bench, model, options, name)
+        run.speed.decode_tok_s = 100 + (1 if options.ubatch_size == 2048 else 0)
+        return run
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, all_the_same)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert "other settings are within 3% of it" in result.output
+    assert "Tuned is within 3% of llama.cpp's usual settings" in result.output
 
 
 def test_tune_explains_when_nothing_fits(monkeypatch, tmp_path):
@@ -433,7 +447,8 @@ def test_tune_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, stopped_on_the_third)
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert "Stopped" in result.output
-    assert "Fastest on this computer: flash attn off, KV f16, micro-batch 512." in result.output
+    assert "Fastest so far: flash attn off, KV f16, micro-batch 512." in result.output
+    assert "Only 2 of 16 combinations were tried" in result.output
     assert len(load_results()) == 2
 
 
