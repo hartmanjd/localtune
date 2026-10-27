@@ -12,6 +12,7 @@
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Annotated
@@ -513,48 +514,26 @@ def tune(
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
     warn_if_busy(gpu)
-    name = model_name or model_file.name
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    tune_id, started = uuid4().hex, time.monotonic()
-    given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
-    placements: dict[str, dict | None] = {cache: given for cache in KV_CACHE_SIZE}
-
-    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
-        options = BenchOptions(
-            prompt_tokens=prompt_tokens,
-            gen_tokens=gen_tokens,
-            repetitions=repetitions,
-            threads=threads,
-            gpu_index=gpu,
-            **((placement or {}) | settings),
-        )
-        engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
-        requested = requested_settings(model_file, options, model_name)
-        with console.status(label):
-            result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
-        result.tune_id = tune_id
-        save_result(result)
-        return result
-
-    combos, runs = combinations(prompt_tokens), []
+    session = TuneSession(given={"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe})
     try:
-        if gpu_layers is None and cpu_moe is None:
-            tokens = prompt_tokens + gen_tokens
-            placements = find_splits(model_file, gpu, bench, tokens) or placements
-        combos = [c for c in combos if placements[c["kv_cache"]] is not None]
-        console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
-        started = time.monotonic()
-        for number, settings in enumerate(combos, 1):
-            left = time_left(time.monotonic() - started, number - 1, len(combos))
-            label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
-            result = bench(settings, label, placements[settings["kv_cache"]])
-            runs.append(result)
-            console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
+        tune_model(
+            session,
+            llama_bench,
+            model_file,
+            model_name,
+            prompt_tokens,
+            gen_tokens,
+            repetitions,
+            electricity,
+            gpu,
+            threads,
+        )
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
+    runs, placements = session.runs, session.placements
 
-    def placement_of(run: RunResult) -> dict:
-        return placements.get(run.settings.kv_cache_k) or given
+    placement_of = session.placement_of
 
     def command_for(run: RunResult) -> str:
         placement = placement_of(run)
@@ -570,22 +549,96 @@ def tune(
         return f"{model}{flags}"
 
     def split_of(run: RunResult) -> str:
-        placement = placement_of(run)
-        if placement.get("cpu_moe_layers") == 0:
-            return "whole model on the GPU"
-        if placement.get("cpu_moe_layers") is not None:
-            return f"experts of {placement['cpu_moe_layers']} layers in RAM"
-        return f"{placement['gpu_layers']} layers on the GPU"
+        return describe_placement(placement_of(run))
 
     splits_differ = len({str(p) for p in placements.values() if p is not None}) > 1
     best = show_tune(
-        runs, command_for, planned=len(combos), split_of=split_of if splits_differ else None
+        runs, command_for, planned=session.planned, split_of=split_of if splits_differ else None
     )
     if best is None:
         raise typer.Exit(1)
     tokens = prompt_tokens + gen_tokens
     show_server_command(best, model_file, placement_of(best), tokens, threads, gpu)
     console.print(f"All runs saved to {results_file()}")
+
+
+# One tuning session: finding the GPU/RAM split a model too big for the GPU needs, then
+# trying every combination of settings (tune.py) on it, one run after another. "localtune tune"
+# runs one session; "localtune sweep --tune" runs one per model and use. Each run is saved as
+# soon as it finishes, with the session's tune_id (and the sweep's sweep_id), and lands in the
+# session as it goes, so whatever finished is kept when Ctrl+C stops it.
+
+
+@dataclass
+class TuneSession:
+    given: dict
+    runs: list[RunResult] = field(default_factory=list)
+    planned: int = 0
+    placements: dict[str, dict | None] = field(default_factory=dict)
+
+    def placement_of(self, run: RunResult) -> dict:
+        return self.placements.get(run.settings.kv_cache_k) or self.given
+
+
+def describe_placement(placement: dict) -> str:
+    if placement.get("cpu_moe_layers") == 0:
+        return "whole model on the GPU"
+    if placement.get("cpu_moe_layers") is not None:
+        return f"experts of {placement['cpu_moe_layers']} layers in RAM"
+    if placement.get("gpu_layers") is not None:
+        return f"{placement['gpu_layers']} layers on the GPU"
+    return "whole model on the GPU"
+
+
+def tune_model(
+    session: TuneSession,
+    llama_bench: str,
+    model_file: Path,
+    model_name: str | None,
+    prompt_tokens: int,
+    gen_tokens: int,
+    repetitions: int,
+    electricity,
+    gpu: int,
+    threads: int | None = None,
+    sweep_id: str | None = None,
+) -> None:
+    tune_id = uuid4().hex
+    session.placements = {cache: session.given for cache in KV_CACHE_SIZE}
+
+    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
+        options = BenchOptions(
+            prompt_tokens=prompt_tokens,
+            gen_tokens=gen_tokens,
+            repetitions=repetitions,
+            threads=threads,
+            gpu_index=gpu,
+            **((placement or {}) | settings),
+        )
+        engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+        requested = requested_settings(model_file, options, model_name)
+        with console.status(label):
+            result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+        result.tune_id, result.sweep_id = tune_id, sweep_id
+        save_result(result)
+        return result
+
+    combos = combinations(prompt_tokens)
+    session.planned = len(combos)
+    if all(value is None for value in session.given.values()):
+        tokens = prompt_tokens + gen_tokens
+        session.placements = find_splits(model_file, gpu, bench, tokens) or session.placements
+    combos = [c for c in combos if session.placements[c["kv_cache"]] is not None]
+    session.planned = len(combos)
+    name = model_name or model_file.name
+    console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
+    started = time.monotonic()
+    for number, settings in enumerate(combos, 1):
+        left = time_left(time.monotonic() - started, number - 1, len(combos))
+        label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
+        result = bench(settings, label, session.placements[settings["kv_cache"]])
+        session.runs.append(result)
+        console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
 
 
 # The winner as a llama-server command (tune.py), for chatting with the model at these settings
@@ -789,7 +842,8 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
 # "localtune run" without options, except that a model too big for the GPU starts from tune's
 # first guess at a GPU/RAM split (tune.py), so it doesn't crawl. The runs share a sweep_id and
 # each is saved as soon as it finishes; Ctrl+C stops the sweep with the finished runs kept, and
-# a model that fails is noted and skipped. A table at the end shows every run.
+# a model that fails is noted and skipped. A table at the end shows every run. With --tune,
+# every model and use gets a whole tuning session instead (tune_sweep, below).
 
 
 @app.command()
@@ -804,6 +858,9 @@ def sweep(
         list[str] | None,
         typer.Option(help="What the models are for; repeat to test several. All three if none."),
     ] = None,
+    tune: bool = typer.Option(
+        False, "--tune", help="Tune every model for every use, like 'localtune tune'. Takes hours."
+    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
     zip_code: str | None = typer.Option(
@@ -830,6 +887,9 @@ def sweep(
     warn_if_busy(gpu)
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     sweep_id, planned = uuid4().hex, len(models) * len(lengths)
+    if tune:
+        tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id)
+        return
     console.print(
         f"Benchmarking {len(models)} model{'s' if len(models) > 1 else ''} for "
         f"{', '.join(lengths)}: {planned} run{'s' if planned > 1 else ''}, "
@@ -868,6 +928,89 @@ def sweep(
 
     show_sweep(runs)
     console.print(f"All runs saved to {results_file()}")
+
+
+# "localtune sweep --tune": a whole tuning session (tune_model) for every model and use, one
+# after another, which can take all night. It ends with one table of what was fastest for each,
+# and how much that beat llama.cpp's usual settings.
+
+
+def tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id) -> None:
+    planned = len(models) * len(lengths)
+    console.print(
+        f"Tuning {len(models)} model{'s' if len(models) > 1 else ''} for {', '.join(lengths)}: "
+        f"{planned} tuning session{'s' if planned > 1 else ''} of about 13 to 16 runs each, one "
+        "at a time. This can take hours. Ctrl+C stops it and keeps the finished runs."
+    )
+    sessions: list[tuple[str, str, TuneSession]] = []
+    started, done = time.monotonic(), 0
+    try:
+        for model in models:
+            model_file, model_name = find_model_file(model)
+            if model_file is None:
+                console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
+                done += len(lengths)
+                continue
+            for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+                left = time_left(time.monotonic() - started, done, planned)
+                console.print(f"\nSession {done + 1} of {planned}: {model}, {use_name}{left}")
+                session = TuneSession(given={"gpu_layers": None, "cpu_moe_layers": None})
+                sessions.append((model, use_name, session))
+                try:
+                    tune_model(
+                        session,
+                        llama_bench,
+                        model_file,
+                        model_name,
+                        prompt_tokens,
+                        gen_tokens,
+                        repetitions,
+                        electricity,
+                        gpu,
+                        sweep_id=sweep_id,
+                    )
+                except typer.Exit:
+                    console.print(f"Nothing fit for {model}, {use_name}; moving on.")
+                done += 1
+    except KeyboardInterrupt:
+        console.print("Stopped. The runs that finished are saved.")
+
+    show_tune_sweep(sessions)
+    console.print(f"All runs saved to {results_file()}")
+
+
+def show_tune_sweep(sessions: list[tuple[str, str, TuneSession]]) -> None:
+    if not sessions:
+        return
+    table = Table(title="Fastest settings for each model and use")
+    for column in ("Model", "Use", "Fastest settings", "Split"):
+        table.add_column(column)
+    for column in ("Answer time", "Vs usual settings"):
+        table.add_column(column, justify="right")
+    for model, use_name, session in sessions:
+        best = fastest(session.runs)
+        if best is None:
+            table.add_row(model, use_name, "nothing worked", "", "", "")
+            continue
+        s, usual = best.settings, default_run(session.runs)
+        winner = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
+        gain = ""
+        if usual is not None and answer_seconds(usual):
+            gain = f"{answer_seconds(usual) / answer_seconds(best) - 1:+.0%}"
+        table.add_row(
+            model,
+            use_name,
+            describe(winner | {"ubatch_size": s.ubatch_size}),
+            describe_placement(session.placement_of(best)),
+            f"{answer_seconds(best):,.1f} s",
+            gain,
+        )
+    console.print(table)
+    console.print(
+        "'Vs usual settings' is how much faster the fastest settings gave a whole answer than "
+        "llama.cpp's usual settings. Run 'localtune tune' on one model and use for the "
+        "commands that use its settings."
+    )
 
 
 # A model too big for the GPU gets tune's first guess at how much of it fits beside the
