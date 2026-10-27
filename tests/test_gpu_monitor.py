@@ -79,3 +79,18 @@ def test_monitor_without_a_gpu():
     with GpuMonitor(interval_s=0.01, reader=lambda: None) as monitor:
         pass
     assert monitor.summary() is None
+
+
+def test_other_use_averages_a_few_quick_readings():
+    readings = iter([sample(0, None, 3.0, 10), sample(1, None, 2.5, 30), None])
+    seen = gpu_monitor.other_use(lambda: next(readings), readings=3, interval_s=0)
+    assert seen.vram_used_gb == 2.5
+    assert seen.utilization_pct == 20
+
+
+def test_a_busy_or_full_gpu_is_noticed():
+    assert gpu_monitor.busy_reason(sample(0, None, 1.0, 5)) is None
+    assert gpu_monitor.busy_reason(sample(0, None, 1.0, 45)) == "the GPU is already 45% busy"
+    full = gpu_monitor.busy_reason(sample(0, None, 9.3, 0))
+    assert full == "9.3 GB of the GPU's memory is already in use"
+    assert gpu_monitor.busy_reason(None) is None
