@@ -10,6 +10,7 @@
 
 import sys
 import time
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Annotated
@@ -55,6 +56,7 @@ from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_w
 from localtune.runners.web_api import requested_settings as web_api_settings
 from localtune.tune import (
     DEFAULTS,
+    KV_CACHE_SIZE,
     NOISE,
     answer_seconds,
     as_good_as,
@@ -513,16 +515,17 @@ def tune(
     name = model_name or model_file.name
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     tune_id, started = uuid4().hex, time.monotonic()
-    placement = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
+    given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
+    placements: dict[str, dict | None] = {cache: given for cache in KV_CACHE_SIZE}
 
-    def bench(settings: dict, label: str) -> RunResult:
+    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
             repetitions=repetitions,
             threads=threads,
             gpu_index=gpu,
-            **(placement | settings),
+            **((placement or {}) | settings),
         )
         engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
         requested = requested_settings(model_file, options, model_name)
@@ -536,30 +539,51 @@ def tune(
     try:
         if gpu_layers is None and cpu_moe is None:
             tokens = prompt_tokens + gen_tokens
-            placement = find_split(model_file, gpu, bench, tokens) or placement
+            placements = find_splits(model_file, gpu, bench, tokens) or placements
+        combos = [c for c in combos if placements[c["kv_cache"]] is not None]
         console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
         started = time.monotonic()
         for number, settings in enumerate(combos, 1):
             left = time_left(time.monotonic() - started, number - 1, len(combos))
-            result = bench(settings, f"Run {number} of {len(combos)}: {describe(settings)}{left}")
+            label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
+            result = bench(settings, label, placements[settings["kv_cache"]])
             runs.append(result)
             console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
 
-    fixed = {
-        "--use": use,
-        "--prompt-tokens": given_prompt,
-        "--gen-tokens": given_gen,
-        "--gpu-layers": placement["gpu_layers"],
-        "--cpu-moe": placement.get("cpu_moe_layers"),
-        "--threads": threads,
-    }
-    fixed_flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
-    best = show_tune(runs, f"{model}{fixed_flags}", planned=len(combos))
+    def placement_of(run: RunResult) -> dict:
+        return placements.get(run.settings.kv_cache_k) or given
+
+    def command_for(run: RunResult) -> str:
+        placement = placement_of(run)
+        fixed = {
+            "--use": use,
+            "--prompt-tokens": given_prompt,
+            "--gen-tokens": given_gen,
+            "--gpu-layers": placement["gpu_layers"],
+            "--cpu-moe": placement.get("cpu_moe_layers"),
+            "--threads": threads,
+        }
+        flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
+        return f"{model}{flags}"
+
+    def split_of(run: RunResult) -> str:
+        placement = placement_of(run)
+        if placement.get("cpu_moe_layers") == 0:
+            return "whole model on the GPU"
+        if placement.get("cpu_moe_layers") is not None:
+            return f"experts of {placement['cpu_moe_layers']} layers in RAM"
+        return f"{placement['gpu_layers']} layers on the GPU"
+
+    splits_differ = len({str(p) for p in placements.values() if p is not None}) > 1
+    best = show_tune(
+        runs, command_for, planned=len(combos), split_of=split_of if splits_differ else None
+    )
     if best is None:
         raise typer.Exit(1)
-    show_server_command(best, model_file, placement, prompt_tokens + gen_tokens, threads, gpu)
+    tokens = prompt_tokens + gen_tokens
+    show_server_command(best, model_file, placement_of(best), tokens, threads, gpu)
     console.print(f"All runs saved to {results_file()}")
 
 
@@ -589,12 +613,14 @@ def quoted(text: str, program: bool = False) -> str:
 
 
 # A model bigger than the GPU's memory is first split between the GPU and RAM (tune.py says
-# how), at llama.cpp's default settings, so the settings tried after it are tried on the
-# fastest split. Models that fit, files localtune can't read and computers without a GPU skip
-# this step.
+# how), so the settings tried after it are tried on the fastest split. Each KV cache type gets
+# its own split: a smaller cache leaves room for more of the model on the GPU, which with a long
+# conversation can be worth more than the cache costs. Cache types whose first guess is the same
+# share one search, so a short conversation only needs one. Models that fit, files localtune
+# can't read and computers without a GPU skip this step.
 
 
-def find_split(model_file: Path, gpu: int, bench, tokens: int) -> dict | None:
+def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dict | None] | None:
     gpus = detect_hardware().gpus
     if gpu >= len(gpus):
         return None
@@ -602,32 +628,52 @@ def find_split(model_file: Path, gpu: int, bench, tokens: int) -> dict | None:
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return None
-    size = model_file.stat().st_size
-    guess = first_guess(size, layout, gpus[gpu].vram_gb, tokens)
-    if guess is None:
+    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    guesses = {cache: first_guess(size, layout, vram_gb, tokens, cache) for cache in KV_CACHE_SIZE}
+    if guesses["f16"] is None:
         return None
 
     console.print(
         f"The model ({size / 1024**3:.1f} GB) and a {tokens:,}-token conversation don't fit "
-        f"in the GPU's memory ({gpus[gpu].vram_gb:.0f} GB), so part of the model has to stay "
+        f"in the GPU's memory ({vram_gb:.0f} GB), so part of the model has to stay "
         "in RAM. First finding how much fits on the GPU."
     )
 
-    def try_split(on_gpu: int) -> float | None:
-        label = describe_split(on_gpu, layout)
-        result = bench(split_settings(on_gpu, layout), f"Trying {label}")
+    def try_split(on_gpu: int, cache_settings: dict, cache: str) -> float | None:
+        label = describe_split(on_gpu, layout) + ("" if cache == "f16" else f", KV {cache}")
+        result = bench(split_settings(on_gpu, layout) | cache_settings, f"Trying {label}")
         console.print(f"  Split: {label}: {outcome(result)}")
         return answer_seconds(result)
 
-    best = find_best_split(try_split, guess, layout.layers)
-    if best is None:
+    splits: dict[str, dict | None] = {}
+    searched: dict[int, dict | None] = {}
+    for cache, guess in guesses.items():
+        start = layout.layers if guess is None else guess
+        if start in searched:
+            splits[cache] = searched[start]
+            continue
+        cache_settings = {} if cache == "f16" else {"flash_attention": True, "kv_cache": cache}
+        if cache != "f16":
+            console.print(
+                f"A {cache} KV cache takes less memory, so more of the model may fit beside it. "
+                "Finding its split too."
+            )
+        best = find_best_split(
+            partial(try_split, cache_settings=cache_settings, cache=cache), start, layout.layers
+        )
+        split = None if best is None else {"cpu_moe_layers": None} | split_settings(best, layout)
+        if best is not None:
+            cache_note = "" if cache == "f16" else f" with a {cache} KV cache"
+            console.print(f"Fastest split{cache_note}: {describe_split(best, layout)}.")
+        searched[start] = splits[cache] = split
+
+    if all(split is None for split in splits.values()):
         console.print(
             "[red]No split fit in GPU memory.[/red] Try a smaller version of the model, "
             "like one with fewer parameters or a smaller quantization."
         )
         raise typer.Exit(1)
-    console.print(f"Fastest split: {describe_split(best, layout)}.")
-    return {"cpu_moe_layers": None} | split_settings(best, layout)
+    return splits
 
 
 def time_left(elapsed_s: float, done: int, total: int) -> str:
@@ -648,7 +694,12 @@ def outcome(result: RunResult) -> str:
     return f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
 
 
-def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -> RunResult | None:
+def show_tune(
+    runs: list[RunResult],
+    command_for: Callable[[RunResult], str],
+    planned: int,
+    split_of: Callable[[RunResult], str] | None = None,
+) -> RunResult | None:
     best = fastest(runs)
     if best is None:
         if runs:
@@ -662,7 +713,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -
 
     worked = sorted((run for run in runs if answer_seconds(run) is not None), key=answer_seconds)
     table = Table(title=f"{best.settings.model}, fastest first")
-    for column in ("Flash attn", "KV cache", "Micro-batch"):
+    for column in ("Flash attn", "KV cache", "Micro-batch") + (("Split",) if split_of else ()):
         table.add_column(column)
     for column in ("Answer time", "Decode tok/s", "Prefill tok/s", "Peak VRAM"):
         table.add_column(column, justify="right")
@@ -672,6 +723,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -
             "on" if s.flash_attention else "off",
             s.kv_cache_k or "",
             str(s.ubatch_size or ""),
+            *([split_of(run)] if split_of else []),
             f"{answer_seconds(run):,.1f} s",
             f"{run.speed.decode_tok_s:,.1f}",
             f"{run.speed.prefill_tok_s:,.0f}",
@@ -692,7 +744,7 @@ def show_tune(runs: list[RunResult], model_and_fixed_flags: str, planned: int) -
         console.print(f"Fastest on this computer: {describe(winner)}.")
     show_trust(best, worked, runs)
     console.print("To use these settings:")
-    command = f"  localtune run {model_and_fixed_flags} {run_flags(best)}"
+    command = f"  localtune run {command_for(best)} {run_flags(best)}"
     console.print(command, markup=False, highlight=False, soft_wrap=True)
     if s.kv_cache_k in ("q8_0", "q4_0"):
         console.print(
