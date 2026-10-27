@@ -70,7 +70,9 @@ def value(f: BinaryIO, kind: int):
 
 # Each token of the conversation keeps a key and a value per attention head that shares them
 # ("KV heads") in every layer, at 2 bytes per number in an f16 cache. Some models give a
-# different head count per layer.
+# different head count per layer. Hybrid models like Qwen3.5 only have attention in every
+# few layers ("full_attention_interval"); the layers between keep a small fixed-size memory
+# instead, which doesn't grow with the conversation.
 
 
 def kv_bytes_per_token(meta: dict, arch: str, layers: int) -> int:
@@ -85,6 +87,9 @@ def kv_bytes_per_token(meta: dict, arch: str, layers: int) -> int:
     if not (kv_heads and key and value):
         return 0
     per_layer = kv_heads if isinstance(kv_heads, list) else [kv_heads] * layers
+    interval = meta.get(f"{arch}.full_attention_interval")
+    if interval:
+        per_layer = [n for i, n in enumerate(per_layer) if (i + 1) % interval == 0]
     return sum(n * (key + value) * 2 for n in per_layer)
 
 
