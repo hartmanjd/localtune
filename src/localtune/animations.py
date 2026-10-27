@@ -56,8 +56,8 @@ def stack(rows: list[Text]) -> Text:
 
 # The logo: "localtune" in small ASCII lettering, four rows high, about four seconds long. Every
 # piece starts as a random dim stroke and snaps into place at its own moment, roughly left to
-# right; then a light shimmer sweeps across the finished word and back, a second one chases off
-# to the right before it's back, and it ends with a small glint at the tip of the last letter.
+# right; then a light shimmer sweeps across the finished word and back, splits in the middle
+# into two that reach both ends together, and it ends with a small glint at the tip of the "e".
 
 LOGO = [
     r" _              _ _                 ",
@@ -69,11 +69,18 @@ WIDTH = len(LOGO[0])
 STROKES = "/\\|_-.'`"
 BUILD_FRAMES = 32
 SHIMMER_FRAMES = 12
-# Each shimmer as (when it starts, after the build; whether it runs to the right): across, back,
-# and halfway back a second one chases off to the right.
-SHIMMERS = [(0, True), (SHIMMER_FRAMES, False), (SHIMMER_FRAMES * 3 // 2, True)]
-SHIMMER_END = SHIMMER_FRAMES * 5 // 2
 SHINE = 0.3
+# Each shimmer as (when it starts, after the build; where it starts and ends, from 0 at the left
+# edge to 1 at the right, a little past each so it slides fully off): across and back, and
+# halfway back it splits, one half running on to the left, the other back to the right, so they
+# reach both ends together.
+EDGE = SHINE / 2
+SHIMMERS = [
+    (0, -EDGE, 1 + EDGE),
+    (SHIMMER_FRAMES, 1 + EDGE, -EDGE),
+    (SHIMMER_FRAMES * 3 // 2, 0.5, 1 + EDGE),
+]
+SHIMMER_END = SHIMMER_FRAMES * 2 - 1
 # The glint, one drawing per moment, as (row, column, character) just off the tip of the "e":
 # a point of light that flares into a small cross and fades.
 TIP = (1, WIDTH)
@@ -90,12 +97,11 @@ HOLD_FRAMES = 4
 def shine(frame: int, column: int) -> bool:
     """Whether a shimmer is passing over this column of the logo at this frame."""
     into = frame - BUILD_FRAMES
-    for start, rightward in SHIMMERS:
-        step = into - start
-        if 0 <= step < SHIMMER_FRAMES:
-            position = column / WIDTH if rightward else 1 - column / WIDTH
-            head = (step + 1) / SHIMMER_FRAMES * (1 + SHINE)
-            if head - SHINE <= position < head:
+    for start, begin, end in SHIMMERS:
+        frames = round(abs(end - begin) / (1 + SHINE) * SHIMMER_FRAMES)
+        if 0 <= into - start < frames:
+            middle = begin + (end - begin) * (into - start + 1) / frames
+            if abs(column / WIDTH - middle) < SHINE / 2:
                 return True
     return False
 
