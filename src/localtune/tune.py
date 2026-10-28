@@ -54,7 +54,8 @@ def describe(settings: dict) -> str:
 # tok/s), the speed people feel while an answer appears; with a long prompt, like a pasted
 # document, reading it matters as much. Judging by both also catches a GPU so full that it has
 # started borrowing slow RAM, which on Windows can leave writing fast but make reading crawl.
-# Runs that failed, like running out of GPU memory, can't win.
+# Runs that failed, like running out of GPU memory, can't win, and neither can a run that left
+# the GPU too full (below) while any other run left room.
 
 
 def answer_seconds(run: RunResult) -> float | None:
@@ -69,13 +70,31 @@ def answer_seconds(run: RunResult) -> float | None:
 
 def fastest(runs: list[RunResult]) -> RunResult | None:
     worked = [run for run in runs if answer_seconds(run) is not None]
-    return min(worked, key=answer_seconds, default=None)
+    with_room = [run for run in worked if not too_full(run)]
+    return min(with_room or worked, key=answer_seconds, default=None)
+
+
+# A run "too full" filled the GPU's memory to within SPILL_MARGIN_GB of the top. On Windows a
+# GPU that runs out of memory doesn't stop with an error: it quietly borrows the computer's slow
+# RAM, and reading a prompt can drop from thousands of tokens a second to about a hundred. Even
+# a run that was fast that night is one browser tab or video away from that, so the margin keeps
+# the winner clear of it. Peak memory counts everything on the GPU, the desktop included.
+
+SPILL_MARGIN_GB = 1.0
+
+
+def too_full(run: RunResult) -> bool:
+    gpu = next((g for g in run.hardware.gpus if g.index == run.gpu_index), None)
+    if gpu is None or run.gpu is None or run.gpu.peak_vram_gb is None:
+        return False
+    return run.gpu.peak_vram_gb > gpu.vram_gb - SPILL_MARGIN_GB
 
 
 # How much to trust the winner. The same settings measured twice differ by a few percent, so
 # settings within NOISE of the fastest are as good as it, and the winner only matters if it
 # beats llama.cpp's usual settings (DEFAULTS: what it uses when nothing is set, flash attention
-# being on by default for the GPUs it supports) by more than that.
+# being on by default for the GPUs it supports) by more than that. A run too full to win isn't
+# as good as a winner that left room.
 
 NOISE = 0.03
 DEFAULTS = {"flash_attention": True, "kv_cache": "f16", "ubatch_size": DEFAULT_UBATCH}
@@ -83,7 +102,14 @@ DEFAULTS = {"flash_attention": True, "kv_cache": "f16", "ubatch_size": DEFAULT_U
 
 def as_good_as(best: RunResult, runs: list[RunResult]) -> list[RunResult]:
     limit = answer_seconds(best) * (1 + NOISE)
-    return [r for r in runs if r is not best and (answer_seconds(r) or limit + 1) <= limit]
+    room = not too_full(best)
+    return [
+        r
+        for r in runs
+        if r is not best
+        and (answer_seconds(r) or limit + 1) <= limit
+        and not (room and too_full(r))
+    ]
 
 
 def default_run(runs: list[RunResult]) -> RunResult | None:

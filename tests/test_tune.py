@@ -4,7 +4,8 @@ import pytest
 
 from localtune.cost import ElectricityPrice
 from localtune.gguf import ModelLayout
-from localtune.hardware import HardwareInfo
+from localtune.gpu_monitor import GpuSummary
+from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import EnergyCost, RunResult, RunSettings, Speed
 from localtune.tune import (
     answer_seconds,
@@ -20,9 +21,11 @@ from localtune.tune import (
     server_context,
     server_flags,
     split_settings,
+    too_full,
 )
 
 PC = HardwareInfo(os="Linux", is_wsl=False, cpu_name="CPU", cpu_threads=8, ram_gb=32.0, gpus=[])
+GPU = GpuInfo(index=0, name="NVIDIA GeForce RTX 4070 Ti SUPER", vram_gb=16.0, driver_version="1")
 
 
 def test_quantized_kv_caches_are_only_tried_with_flash_attention():
@@ -82,6 +85,40 @@ def test_runs_within_noise_are_as_good_as_the_fastest():
     best, close, far = a_run(100.0), a_run(98.0), a_run(90.0)
     crashed = a_run(99.0, status="out_of_memory")
     assert as_good_as(best, [best, close, far, crashed]) == [close]
+
+
+def filled_to(run, peak_gb):
+    # The run as if the GPU's memory peaked at peak_gb on a 16 GB GPU.
+    run.hardware = PC.model_copy(update={"gpus": [GPU]})
+    run.gpu = GpuSummary(
+        duration_s=10.0,
+        sample_count=20,
+        avg_power_w=None,
+        peak_power_w=None,
+        energy_wh=None,
+        baseline_vram_gb=1.0,
+        peak_vram_gb=peak_gb,
+        added_vram_gb=peak_gb - 1.0,
+        avg_utilization_pct=90.0,
+        peak_temperature_c=60.0,
+    )
+    return run
+
+
+def test_a_run_that_left_the_gpu_nearly_full_only_wins_when_nothing_left_room():
+    full, roomy = filled_to(a_run(120.0), 15.6), filled_to(a_run(100.0), 14.5)
+    assert too_full(full) and not too_full(roomy)
+    assert fastest([full, roomy]) is roomy
+    assert fastest([full]) is full
+
+
+def test_a_full_run_is_not_as_good_as_a_winner_with_room():
+    best, full = filled_to(a_run(100.0), 14.5), filled_to(a_run(99.0), 15.6)
+    assert as_good_as(best, [best, full]) == []
+
+
+def test_runs_without_gpu_readings_are_never_too_full():
+    assert not too_full(a_run(100.0))
 
 
 def test_finds_the_run_with_llama_cpps_usual_settings():
