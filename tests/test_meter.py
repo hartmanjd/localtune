@@ -32,10 +32,10 @@ def test_the_bar_fills_as_far_as_the_memory_is_in_use():
 
 def test_the_hint_says_when_the_benchmark_starts():
     console = Console(file=io.StringIO(), width=300)
-    console.print(screen(reading(9.0), 16.0, [], 47))
+    console.print(screen(reading(9.0), 16.0, []))
     text = console.file.getvalue()
     assert "once GPU usage falls below 20% and other programs are using less than 2 GB" in text
-    assert "on its own in 47 s." in text
+    assert "Press Enter to start now." in text
 
 
 def test_the_gpu_counts_as_busy_from_2_gb_or_a_busy_gpu():
@@ -69,10 +69,3 @@ def test_enter_starts_the_benchmark_anyway():
         lambda: reading(9.0), 16.0, terminal(), [], pressed=lambda: True, tick_s=0
     )
     assert outcome == "enter"
-
-
-def test_the_benchmark_starts_by_itself_after_the_wait():
-    outcome = wait_for_room(
-        lambda: reading(9.0), 16.0, terminal(), [], wait_s=0, pressed=lambda: False, tick_s=0
-    )
-    assert outcome == "timeout"

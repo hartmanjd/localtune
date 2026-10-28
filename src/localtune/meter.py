@@ -6,9 +6,9 @@
 # reads what else is going on (background.py); when the GPU is already in use, this gauge shows
 # how full its memory is, updated every second, along with the programs NVIDIA says are using
 # it. Closing a program makes the bar drop right away, and the benchmark starts as soon as the
-# GPU is free, when Enter is pressed, or after a minute, so a sweep left running overnight still
-# carries on. On Windows, NVIDIA often can't name the programs drawing on the screen (browsers,
-# games), so the list can be short or empty while the bar still shows the total.
+# GPU is free, or straight away when Enter is pressed. On Windows, NVIDIA often can't name the
+# programs drawing on the screen (browsers, games), so the list can be short or empty while the
+# bar still shows the total.
 
 import subprocess
 import sys
@@ -24,7 +24,6 @@ from localtune.background import OTHER_VRAM_GB
 from localtune.gpu_monitor import BUSY_UTILIZATION_PCT, GpuSample
 
 BAR_WIDTH = 30
-WAIT_S = 60
 
 
 def is_busy(sample: GpuSample) -> bool:
@@ -49,7 +48,7 @@ def gauge(sample: GpuSample, total_gb: float) -> Text:
     return text
 
 
-def screen(sample: GpuSample, total_gb: float, programs: list[str], seconds_left: float) -> Group:
+def screen(sample: GpuSample, total_gb: float, programs: list[str]) -> Group:
     lines = [gauge(sample, total_gb)]
     if programs:
         lines.append(Text(f"  Using the GPU: {', '.join(programs)}"))
@@ -58,7 +57,7 @@ def screen(sample: GpuSample, total_gb: float, programs: list[str], seconds_left
             "  For the best results, please close any programs you don't need. The benchmark "
             f"will start once GPU usage falls below {BUSY_UTILIZATION_PCT}% and other programs "
             f"are using less than {OTHER_VRAM_GB:.0f} GB of its memory. Press Enter to start "
-            f"now, or it will start on its own in {seconds_left:.0f} s.",
+            "now.",
             style="dim",
         )
     )
@@ -121,9 +120,9 @@ def enter_pressed() -> bool:
     return False
 
 
-# Showing the gauge until the GPU is free ("free"), Enter is pressed ("enter") or the wait is
-# over ("timeout"). A fresh reading is taken every second; between readings it only checks for
-# Enter, so pressing it feels immediate.
+# Showing the gauge until the GPU is free ("free") or Enter is pressed ("enter"). A fresh
+# reading is taken every second; between readings it only checks for Enter, so pressing it feels
+# immediate.
 
 
 def wait_for_room(
@@ -131,25 +130,21 @@ def wait_for_room(
     total_gb: float,
     console: Console,
     programs: list[str],
-    wait_s: float = WAIT_S,
     pressed: Callable[[], bool] = enter_pressed,
     tick_s: float = 0.25,
     read_every_s: float = 1.0,
 ) -> str:
     sample = read()
     if sample is None:
-        return "timeout"
-    started = last_read = time.monotonic()
+        return "enter"
+    last_read = time.monotonic()
     with Live(console=console, refresh_per_second=4, transient=True) as live:
         while True:
             if not is_busy(sample):
                 return "free"
             if pressed():
                 return "enter"
-            left = wait_s - (time.monotonic() - started)
-            if left <= 0:
-                return "timeout"
-            live.update(screen(sample, total_gb, programs, left))
+            live.update(screen(sample, total_gb, programs))
             time.sleep(tick_s)
             if time.monotonic() - last_read >= read_every_s:
                 sample, last_read = read() or sample, time.monotonic()
