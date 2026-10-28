@@ -55,8 +55,10 @@ def screen(sample: GpuSample, total_gb: float, programs: list[str], seconds_left
         lines.append(Text(f"  Using the GPU: {', '.join(programs)}"))
     lines.append(
         Text(
-            "  Close the programs you don't need and watch the bar drop. The benchmark starts "
-            f"when the GPU is free, when you press Enter, or in {seconds_left:.0f} s.",
+            "  For the best results, please close any programs you don't need. The benchmark "
+            f"will start once GPU usage falls below {BUSY_UTILIZATION_PCT}% and other programs "
+            f"are using less than {OTHER_VRAM_GB:.0f} GB of its memory. Press Enter to start "
+            f"now, or it will start on its own in {seconds_left:.0f} s.",
             style="dim",
         )
     )
