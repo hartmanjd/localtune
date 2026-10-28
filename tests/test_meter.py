@@ -34,8 +34,8 @@ def test_the_hint_says_when_the_benchmark_starts():
     console = Console(file=io.StringIO(), width=300)
     console.print(screen(reading(9.0), 16.0, []))
     text = console.file.getvalue()
-    assert "once GPU usage falls below 20% and other programs are using less than 2 GB" in text
-    assert "Press Enter to start now." in text
+    assert "once GPU usage falls below 20%\n  and other programs are using less than 2 GB" in text
+    assert "\n  Press Enter to start now.\n" in text
 
 
 def test_the_gpu_counts_as_busy_from_2_gb_or_a_busy_gpu():
@@ -44,9 +44,18 @@ def test_the_gpu_counts_as_busy_from_2_gb_or_a_busy_gpu():
     assert is_busy(reading(0.8, utilization=60.0))
 
 
-def test_programs_are_named_by_their_file_with_memory_when_known():
-    text = "C:\\Program Files\\Ollama\\ollama.exe, 9830\n/usr/bin/python3, [N/A]\n"
-    assert parse_programs(text) == ["ollama.exe (9.6 GB)", "python3"]
+def test_programs_are_listed_biggest_first_with_memory_when_known():
+    text = (
+        "/usr/bin/python3, 1024\n"
+        "C:\\Games\\game.exe, [N/A]\n"
+        "C:\\Program Files\\Ollama\\ollama.exe, 9830\n"
+        "/usr/bin/python3, 512\n"
+    )
+    assert parse_programs(text) == [
+        "ollama.exe  9.6 GB",
+        "python3  1.5 GB",
+        "game.exe  (memory not reported)",
+    ]
     assert parse_programs("") == []
 
 
