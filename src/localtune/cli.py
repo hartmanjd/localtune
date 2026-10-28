@@ -771,7 +771,7 @@ def describe_placement(placement: dict, layers: int | None = None) -> str:
     of = f" of {layers}" if layers else ""
     on_gpu, in_ram = placement.get("gpu_layers"), placement.get("cpu_moe_layers")
     if in_ram:
-        return f"experts of {in_ram}{of} layers in RAM"
+        return f"experts in RAM for {in_ram}{of} layers"
     if in_ram == 0 or on_gpu is None or on_gpu < 0 or (layers and on_gpu > layers):
         return "whole model on the GPU"
     return f"{on_gpu}{of} layers on the GPU"
