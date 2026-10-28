@@ -908,3 +908,53 @@ def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
     assert rows[0]["speed.decode_tok_s"] == "133.2"
     assert rows[0]["hardware.gpu.name"] == "NVIDIA GeForce RTX 4070 Ti SUPER"
     assert "estimate.decode_tok_s" in rows[0]
+
+
+def fake_quality(monkeypatch, tmp_path, perplexities):
+    # 'localtune quality' with a pretend llama-perplexity giving each cache type a perplexity.
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "get_text", lambda: tmp_path / "wiki.test.raw")
+
+    def measured(tool, model_file, text, cache, placement, base, gpu, chunks):
+        if perplexities[cache] is None:
+            return cli.QualityResult(
+                kv_cache=cache, model_file=model_file.name, status="out_of_memory",
+                error="cudaMalloc failed", **base,
+            )  # fmt: skip
+        return cli.QualityResult(
+            kv_cache=cache, model_file=model_file.name, perplexity=perplexities[cache],
+            perplexity_error=0.04, **base,
+        )  # fmt: skip
+
+    monkeypatch.setattr(cli, "measure_quality", measured)
+    return model
+
+
+def test_quality_compares_each_kv_cache_with_f16(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_quality(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.012, "q4_0": 6.24})
+    result = runner.invoke(cli.app, ["quality", str(model)])
+    assert result.exit_code == 0
+    assert "Perplexity is how surprised the model was" in result.output
+    assert "+4.0%" in result.output
+    assert "A q8_0 KV cache: 0.2% worse, too small to notice." in result.output
+    assert "A q4_0 KV cache: 4.0% worse, noticeable." in result.output
+    saved = (tmp_path / "home" / "quality.jsonl").read_text().splitlines()
+    assert len(saved) == 3
+
+
+def test_quality_lists_a_cache_type_that_failed(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_quality(monkeypatch, tmp_path, {"f16": None, "q8_0": 6.0, "q4_0": 6.1})
+    result = runner.invoke(cli.app, ["quality", str(model)])
+    assert "out of GPU memory" in result.output
+    assert "KV cache: " not in result.output
+    assert "f16 failed: cudaMalloc failed" in result.output
+
+
+def test_quality_without_llama_cpp(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(cli, "find_tool", lambda name: None)
+    result = runner.invoke(cli.app, ["quality", str(model)])
+    assert result.exit_code == 1
+    assert "localtune doctor" in result.output
