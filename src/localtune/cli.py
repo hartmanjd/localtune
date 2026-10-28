@@ -60,6 +60,7 @@ from localtune.quality import (
     KV_CACHES,
     TEXT_NAME,
     QualityResult,
+    earlier,
     get_text,
     loss_pct,
     quality_file,
@@ -637,7 +638,8 @@ def show_run(result: RunResult) -> None:
 # the whole session becomes data. It says how long is left, estimated from the runs so far,
 # and Ctrl+C stops it with the finished runs kept. Settings that aren't tuned, like how many
 # layers go on the GPU, can be fixed for every run, which is how a model too big for the GPU
-# gets tuned.
+# gets tuned. When a q8_0 or q4_0 KV cache wins, it then measures how much that cache changes
+# the answers (quality.py), since speed tests can't see it.
 
 
 @app.command()
@@ -669,6 +671,11 @@ def tune(
     country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
     price: float | None = typer.Option(
         None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
+    ),
+    check_quality: bool = typer.Option(
+        True,
+        "--quality/--no-quality",
+        help="When a q8_0 or q4_0 KV cache wins, measure how much it changes the answers.",
     ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
@@ -722,6 +729,20 @@ def tune(
         raise typer.Exit(1)
     tokens = prompt_tokens + gen_tokens
     show_server_command(best, model_file, placement_of(best), tokens, threads, gpu)
+    cache = best.settings.kv_cache_k
+    if cache in ("q8_0", "q4_0"):
+        found = None
+        if check_quality:
+            context = server_context(tokens)
+            f16 = placements.get("f16") or guessed_split(model_file, gpu, tokens)
+            caches = {"f16": f16, cache: placement_of(best)}
+            console.print(f"Checking how much the {cache} KV cache changes the model's answers.")
+            found = measure_caches(model_file, model_name, caches, gpu, context, reuse=True)
+        if not show_tune_quality(found, cache, runs, command_for):
+            console.print(
+                f"A {cache} KV cache saves memory but can make answers slightly worse than f16. "
+                f"'localtune quality {model}' measures how much."
+            )
     console.print(f"All runs saved to {results_file()}")
 
 
@@ -991,10 +1012,6 @@ def show_tune(
     console.print("To use these settings:")
     command = f"  localtune run {command_for(best)} {run_flags(best)}"
     console.print(command, markup=False, highlight=False, soft_wrap=True)
-    if s.kv_cache_k in ("q8_0", "q4_0"):
-        console.print(
-            f"A {s.kv_cache_k} KV cache saves memory but can make answers slightly worse than f16."
-        )
     return best
 
 
@@ -1333,38 +1350,65 @@ def quality(
     """Measure how much each KV cache type changes the model's answers."""
     if context is None:
         context = server_context(sum(lengths_for(use, None, None))) if use else CONTEXT
-    llama_perplexity = find_tool("llama-perplexity")
-    if llama_perplexity is None:
+    if find_tool("llama-perplexity") is None:
         console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
         raise typer.Exit(1)
     model_file, model_name = find_model_file(model)
     if model_file is None:
         explain_missing_model(model)
         raise typer.Exit(1)
+    warn_if_busy(gpu)
+    given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
+    placement = given if gpu_layers or cpu_moe else guessed_split(model_file, gpu, context)
+    caches = {cache: placement for cache in KV_CACHES}
+    found = measure_caches(model_file, model_name, caches, gpu, context, chunks)
+    if found is None:
+        raise typer.Exit(1)
+    show_quality(found)
+    console.print(f"Saved to {quality_file()}")
+
+
+# Reading the test text with each KV cache type given, each placed on the GPU (and in RAM) as
+# given. tune reuses a check this computer already made on the same model and chunk length, since
+# the answer doesn't change between runs. Nothing is measured when llama-perplexity or the text
+# is missing.
+
+
+def measure_caches(
+    model_file: Path,
+    model_name: str | None,
+    caches: dict[str, dict],
+    gpu: int,
+    context: int,
+    chunks: int = CHUNKS,
+    reuse: bool = False,
+) -> list[QualityResult] | None:
+    llama_perplexity = find_tool("llama-perplexity")
+    if llama_perplexity is None:
+        return None
     try:
         with working(console, "run", f"Downloading the test text ({TEXT_NAME})..."):
             text = get_text()
     except (OSError, KeyError, zipfile.BadZipFile) as error:
         console.print(f"Couldn't download the test text: {error}")
-        raise typer.Exit(1) from error
-
-    warn_if_busy(gpu)
-    given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
-    placement = given if gpu_layers or cpu_moe else guessed_split(model_file, gpu, context)
+        return None
     base = {"rig_id": rig_id(), "model": model_name or model_file.stem}
     base["hardware"] = detect_hardware()
     found = []
-    for number, cache in enumerate(KV_CACHES, 1):
+    for number, (cache, placement) in enumerate(caches.items(), 1):
+        known = earlier(base["rig_id"], base["model"], cache, context) if reuse else None
+        if known is not None:
+            found.append(known)
+            continue
         label = f"Reading {chunks} chunks of {context:,} tokens with a {cache} KV cache"
-        progress = (number - 1) / len(KV_CACHES)
-        with working(console, "run", f"{label} ({number} of {len(KV_CACHES)})...", progress):
+        progress = (number - 1) / len(caches)
+        with working(console, "run", f"{label} ({number} of {len(caches)})...", progress):
             result = measure_quality(
                 llama_perplexity, model_file, text, cache, placement, base, gpu, chunks, context
             )
         save_quality(result)
         found.append(result)
-    show_quality(found)
-    console.print(f"Saved to {quality_file()}")
+    return found
 
 
 def show_quality(found: list[QualityResult]) -> None:
@@ -1399,6 +1443,38 @@ def show_quality(found: list[QualityResult]) -> None:
     errors = [r for r in found if r.error]
     for r in errors:
         console.print(f"[red]{r.kv_cache} failed:[/red] {r.error}", highlight=False)
+
+
+# After tune: how much the winning q8_0 or q4_0 cache changed the answers. When the change is big
+# enough to matter (quality.py), the fastest f16 settings are shown too, so speed can be traded
+# for quality knowingly.
+
+
+def show_tune_quality(
+    found: list[QualityResult] | None,
+    cache: str,
+    runs: list[RunResult],
+    command_for: Callable[[RunResult], str],
+) -> bool:
+    by_cache = {r.kv_cache: r for r in found or []}
+    if "f16" not in by_cache or cache not in by_cache:
+        return False
+    loss = loss_pct(by_cache[cache], by_cache["f16"])
+    if loss is None:
+        return False
+    console.print(
+        f"A {cache} KV cache made the answers {max(loss, 0):.1f}% worse than f16, {verdict(loss)}."
+    )
+    f16 = fastest([run for run in runs if run.settings.kv_cache_k == "f16"])
+    best = fastest(runs)
+    if loss >= 1 and f16 is not None and best is not None:
+        console.print(
+            f"The fastest f16 settings keep full quality, at {answer_seconds(f16):,.1f} s per "
+            f"answer instead of {answer_seconds(best):,.1f} s:"
+        )
+        command = f"  localtune run {command_for(f16)} {run_flags(f16)}"
+        console.print(command, markup=False, highlight=False, soft_wrap=True)
+    return True
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so

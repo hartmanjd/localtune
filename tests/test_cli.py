@@ -196,6 +196,7 @@ def fake_run(monkeypatch, tmp_path, outcome):
     monkeypatch.setattr(cli, "find_tool", lambda name: name)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
     monkeypatch.setattr(cli, "run_llama_bench", outcome)
+    pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.006, "q4_0": 6.1})
     model = tmp_path / "llama-2-7b.Q4_0.gguf"
     model.write_text("")
     return model
@@ -466,6 +467,45 @@ def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_pat
     saved = load_results()
     assert len(saved) == 16
     assert len({run.tune_id for run in saved}) == 1 and saved[0].tune_id
+
+
+def test_tune_checks_the_quality_of_a_smaller_kv_cache(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert "A q8_0 KV cache made the answers 0.1% worse than f16, too small to" in result.output
+    assert "fastest f16 settings" not in result.output
+    saved = (tmp_path / "home" / "quality.jsonl").read_text().splitlines()
+    assert len(saved) == 2
+
+
+def test_tune_offers_f16_when_a_smaller_cache_costs_quality(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.12})
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert "2.0% worse than f16, small, but there." in result.output
+    assert "keep full quality, at 1.3 s per answer instead of 1.2 s:" in result.output
+    assert "--kv-cache f16 --ubatch-size 2048" in result.output
+
+
+def test_tune_reuses_an_earlier_quality_check(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    runner.invoke(cli.app, ["tune", str(model)])
+    measured = pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.006})
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert measured == []
+    assert "0.1% worse than f16" in result.output
+
+
+def test_tune_can_skip_the_quality_check(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    measured = pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.006})
+    result = runner.invoke(cli.app, ["tune", str(model), "--no-quality"])
+    assert measured == []
+    assert "A q8_0 KV cache saves memory" in result.output
 
 
 def test_tune_says_when_tuning_made_no_real_difference(monkeypatch, tmp_path):
@@ -910,12 +950,14 @@ def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
     assert "estimate.decode_tok_s" in rows[0]
 
 
-def fake_quality(monkeypatch, tmp_path, perplexities):
-    # 'localtune quality' with a pretend llama-perplexity giving each cache type a perplexity.
-    model = fake_run(monkeypatch, tmp_path, example_run)
+def pretend_perplexity(monkeypatch, tmp_path, perplexities):
+    # A pretend llama-perplexity giving each cache type a perplexity (None: out of memory), and
+    # the test text without downloading it.
     monkeypatch.setattr(cli, "get_text", lambda: tmp_path / "wiki.test.raw")
+    measured_caches = []
 
     def measured(tool, model_file, text, cache, placement, base, gpu, chunks, context):
+        measured_caches.append(cache)
         base = base | {"context_size": context}
         if perplexities[cache] is None:
             return cli.QualityResult(
@@ -928,6 +970,13 @@ def fake_quality(monkeypatch, tmp_path, perplexities):
         )  # fmt: skip
 
     monkeypatch.setattr(cli, "measure_quality", measured)
+    return measured_caches
+
+
+def fake_quality(monkeypatch, tmp_path, perplexities):
+    # 'localtune quality' with a pretend llama-perplexity.
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    pretend_perplexity(monkeypatch, tmp_path, perplexities)
     return model
 
 
