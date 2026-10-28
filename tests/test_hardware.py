@@ -44,6 +44,62 @@ def test_parse_gpu_csv_skips_unreadable_lines():
     assert [gpu.index for gpu in hardware.parse_gpu_csv(text)] == [1]
 
 
+@pytest.mark.parametrize(
+    ("cpu_max", "cpus"),
+    [("800000 100000", 8.0), ("150000 100000", 1.5), ("max 100000", None), ("", None)],
+)
+def test_parse_cpu_quota(cpu_max, cpus):
+    assert hardware.parse_cpu_quota(cpu_max) == cpus
+
+
+@pytest.mark.parametrize(
+    ("memory_max", "gb"),
+    [("68719476736\n", 64.0), ("max\n", None), ("9223372036854771712", None), ("", None)],
+)
+def test_parse_memory_limit_gb(memory_max, gb):
+    assert hardware.parse_memory_limit_gb(memory_max) == gb
+
+
+def container_files(monkeypatch, files):
+    monkeypatch.setattr(hardware, "read_text", lambda path: files.get(path, ""))
+
+
+def test_a_container_reports_its_share_of_the_cpu(monkeypatch):
+    container_files(monkeypatch, {"/sys/fs/cgroup/cpu.max": "800000 100000"})
+    monkeypatch.setattr(
+        hardware.os, "sched_getaffinity", lambda pid: set(range(128)), raising=False
+    )
+    assert hardware.cpu_threads_allowed() == 8
+
+
+def test_an_older_container_reports_its_share_of_the_cpu(monkeypatch):
+    container_files(
+        monkeypatch,
+        {
+            "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "1200000",
+            "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000",
+        },
+    )
+    monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(64)), raising=False)
+    assert hardware.cpu_threads_allowed() == 12
+
+
+def test_cpus_pinned_to_the_program_count_without_a_quota(monkeypatch):
+    container_files(monkeypatch, {"/sys/fs/cgroup/cpu.max": "max 100000"})
+    monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(6)), raising=False)
+    assert hardware.cpu_threads_allowed() == 6
+
+
+def test_a_container_reports_its_share_of_the_ram(monkeypatch):
+    container_files(monkeypatch, {"/sys/fs/cgroup/memory.max": "68719476736"})
+    assert hardware.ram_allowed_gb(503.7) == 64.0
+
+
+def test_ram_without_a_limit_is_the_whole_computers(monkeypatch):
+    container_files(monkeypatch, {"/sys/fs/cgroup/memory.max": "max"})
+    assert hardware.ram_allowed_gb(32.0) == 32.0
+
+
 def test_is_wsl():
     assert hardware.is_wsl(WSL_PROC_VERSION)
     assert not hardware.is_wsl("Linux version 6.8.0-45-generic (buildd@ubuntu)")

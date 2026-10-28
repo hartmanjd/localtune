@@ -155,8 +155,9 @@ def info() -> None:
     system = Table(title=f"localtune {__version__}", show_header=False)
     system.add_row("OS", hw.os + (" (WSL)" if hw.is_wsl else ""))
     system.add_row("CPU", hw.cpu_name or "unknown")
-    system.add_row("CPU threads", str(hw.cpu_threads or "unknown"))
-    system.add_row("RAM", f"{hw.ram_gb} GB" if hw.ram_gb else "unknown")
+    share = " (this container's share)" if hw.in_container else ""
+    system.add_row("CPU threads", f"{hw.cpu_threads}{share}" if hw.cpu_threads else "unknown")
+    system.add_row("RAM", f"{hw.ram_gb} GB{share}" if hw.ram_gb else "unknown")
     console.print(system)
 
     if not hw.gpus:

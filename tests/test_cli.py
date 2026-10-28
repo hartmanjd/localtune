@@ -53,6 +53,14 @@ def test_info_shows_the_hardware(monkeypatch):
     assert "672 GB/s" in result.output
 
 
+def test_info_says_when_cpu_and_ram_are_a_container_s_share(monkeypatch):
+    wide_terminal(monkeypatch)
+    rented = FAKE_PC.model_copy(update={"in_container": True})
+    monkeypatch.setattr(cli, "detect_hardware", lambda: rented)
+    result = runner.invoke(cli.app, ["info"])
+    assert "this container's share" in result.output
+
+
 def test_info_without_a_gpu(monkeypatch):
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": []}))
     result = runner.invoke(cli.app, ["info"])
