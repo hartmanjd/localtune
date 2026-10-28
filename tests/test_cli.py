@@ -248,6 +248,24 @@ def test_run_warns_and_notes_when_another_program_is_busy(monkeypatch, tmp_path)
     assert load_results()[0].background == busy
 
 
+def test_run_starts_on_a_fresh_reading_once_the_gpu_is_freed(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    quiet = Background(gpu_utilization_pct=0, gpu_vram_used_gb=0.6)
+    readings = iter([Background(gpu_utilization_pct=0, gpu_vram_used_gb=9.3), quiet])
+    monkeypatch.setattr(cli, "read_background", lambda gpu_index=0: next(readings))
+    monkeypatch.setattr(cli, "show_memory_meter", lambda gpu: "free")
+    wide_terminal(monkeypatch)
+    result = runner.invoke(cli.app, ["run", str(model)])
+    assert "9.3 GB of the GPU's memory is already in use" in result.output
+    assert "The GPU is free now." in result.output
+    assert load_results()[0].background == quiet
+
+
+def test_the_memory_meter_only_shows_for_someone_watching(monkeypatch):
+    monkeypatch.setattr(cli, "can_ask", lambda: False)
+    assert cli.show_memory_meter(0) is None
+
+
 def test_run_saves_a_failed_run(monkeypatch, tmp_path):
     def out_of_memory(llama_bench, model, options, name=None):
         raise BackendError("cudaMalloc failed", status="out_of_memory")
