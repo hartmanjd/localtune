@@ -671,7 +671,7 @@ def tune(
         return f"{model}{flags}"
 
     def split_of(run: RunResult) -> str:
-        return describe_placement(placement_of(run))
+        return describe_placement(placement_of(run), session.layers)
 
     splits_differ = len({str(p) for p in placements.values() if p is not None}) > 1
     best = show_tune(
@@ -688,7 +688,9 @@ def tune(
 # trying every combination of settings (tune.py) on it, one run after another. "localtune tune"
 # runs one session; "localtune sweep --tune" runs one per model and use. Each run is saved as
 # soon as it finishes, with the session's tune_id (and the sweep's sweep_id), and lands in the
-# session as it goes, so whatever finished is kept when Ctrl+C stops it.
+# session as it goes, so whatever finished is kept when Ctrl+C stops it. It also knows how many
+# layers the model has, so a split can say "40 of 65 layers on the GPU" (llama.cpp counts the
+# output layer as one more, so 66 of them means the whole model).
 
 
 @dataclass
@@ -697,19 +699,20 @@ class TuneSession:
     runs: list[RunResult] = field(default_factory=list)
     planned: int = 0
     placements: dict[str, dict | None] = field(default_factory=dict)
+    layers: int | None = None
 
     def placement_of(self, run: RunResult) -> dict:
         return self.placements.get(run.settings.kv_cache_k) or self.given
 
 
-def describe_placement(placement: dict) -> str:
-    if placement.get("cpu_moe_layers") == 0:
+def describe_placement(placement: dict, layers: int | None = None) -> str:
+    of = f" of {layers}" if layers else ""
+    on_gpu, in_ram = placement.get("gpu_layers"), placement.get("cpu_moe_layers")
+    if in_ram:
+        return f"experts of {in_ram}{of} layers in RAM"
+    if in_ram == 0 or on_gpu is None or on_gpu < 0 or (layers and on_gpu > layers):
         return "whole model on the GPU"
-    if placement.get("cpu_moe_layers") is not None:
-        return f"experts of {placement['cpu_moe_layers']} layers in RAM"
-    if placement.get("gpu_layers") is not None:
-        return f"{placement['gpu_layers']} layers on the GPU"
-    return "whole model on the GPU"
+    return f"{on_gpu}{of} layers on the GPU"
 
 
 def tune_model(
@@ -728,6 +731,10 @@ def tune_model(
 ) -> None:
     tune_id = uuid4().hex
     session.placements = {cache: session.given for cache in KV_CACHE_SIZE}
+    try:
+        session.layers = read_layout(model_file).layers
+    except (GgufError, OSError):
+        session.layers = None
 
     def bench(
         settings: dict, label: str, placement: dict | None = None, progress: float | None = None
@@ -1176,7 +1183,7 @@ def show_tune_sweep(sessions: list[tuple[str, str, TuneSession]]) -> None:
             model,
             use_name,
             describe(winner | {"ubatch_size": s.ubatch_size}),
-            describe_placement(session.placement_of(best)),
+            describe_placement(session.placement_of(best), session.layers),
             f"{answer_seconds(best):,.1f} s",
             gain,
         )
