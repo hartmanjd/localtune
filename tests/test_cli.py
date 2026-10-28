@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from localtune import cli
+from localtune import cli, tune
 from localtune.background import Background
 from localtune.doctor import Check
 from localtune.gguf import ModelLayout
@@ -474,6 +474,20 @@ def test_tune_explains_when_nothing_fits(monkeypatch, tmp_path):
     assert "--gpu-layers" in result.output
 
 
+def test_tune_passes_over_settings_that_leave_the_gpu_nearly_full(monkeypatch, tmp_path):
+    def q8_0_fills_it(run):
+        return run.settings.kv_cache_k == "q8_0"
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    monkeypatch.setattr(cli, "too_full", q8_0_fills_it)
+    monkeypatch.setattr(tune, "too_full", q8_0_fills_it)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert "GPU memory nearly full" in result.output
+    assert "'full' means the run left less than 1 GB" in result.output
+    assert "KV f16, micro-batch 2048." in result.output
+
+
 def test_tune_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
     calls = itertools.count()
 
@@ -533,6 +547,35 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
     assert "-ngl 49 --n-cpu-moe 25 -fa on" in result.output
     assert len(load_results()) == 4 + 16
+
+
+def test_tune_keeps_a_split_clear_of_a_nearly_full_gpu(monkeypatch, tmp_path):
+    # Like above, but keeping the experts of fewer than 27 layers in RAM leaves the GPU too full.
+    def split_run(llama_bench, model, options, name=None):
+        if options.ubatch_size is None:
+            run = example_run(llama_bench, model, options, name)
+            run.settings.cpu_moe_layers = options.cpu_moe_layers
+            run.speed.decode_tok_s = 100 - options.cpu_moe_layers
+            return run
+        return tuned_run(llama_bench, model, options, name)
+
+    def nearly_full(run):
+        return (run.settings.cpu_moe_layers or 99) < 27
+
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, split_run)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=48, experts=128, expert_share=0.9)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    monkeypatch.setattr(cli, "too_full", nearly_full)
+    monkeypatch.setattr(tune, "too_full", nearly_full)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert result.exit_code == 0
+    assert "Fastest split: experts of 27 of 48 layers in RAM." in result.output
 
 
 def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):

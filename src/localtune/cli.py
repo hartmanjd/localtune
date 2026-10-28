@@ -82,6 +82,7 @@ from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
     NOISE,
+    SPILL_MARGIN_GB,
     answer_seconds,
     as_good_as,
     combinations,
@@ -95,6 +96,7 @@ from localtune.tune import (
     server_context,
     server_flags,
     split_settings,
+    too_full,
 )
 from localtune.uses import USES, UnknownUseError, token_lengths
 
@@ -830,7 +832,7 @@ def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dic
         label = describe_split(on_gpu, layout) + ("" if cache == "f16" else f", KV {cache}")
         result = bench(split_settings(on_gpu, layout) | cache_settings, f"Trying {label}")
         console.print(f"  Split: {label}: {outcome(result)}")
-        return answer_seconds(result)
+        return None if too_full(result) else answer_seconds(result)
 
     splits: dict[str, dict | None] = {}
     searched: dict[int, dict | None] = {}
@@ -878,7 +880,10 @@ def outcome(result: RunResult) -> str:
     speed = result.speed
     seconds = answer_seconds(result)
     answer = f"{seconds:,.1f} s per answer, " if seconds is not None else ""
-    return f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill"
+    full = ", [yellow]GPU memory nearly full[/yellow]" if too_full(result) else ""
+    return (
+        f"{answer}{speed.decode_tok_s:,.1f} tok/s decode, {speed.prefill_tok_s:,.0f} prefill{full}"
+    )
 
 
 def show_tune(
@@ -905,7 +910,7 @@ def show_tune(
     for column in ("Answer time", "Decode tok/s", "Prefill tok/s", "Peak VRAM"):
         table.add_column(column, justify="right")
     for run in worked:
-        s, gpu = run.settings, run.gpu
+        s = run.settings
         table.add_row(
             "on" if s.flash_attention else "off",
             s.kv_cache_k or "",
@@ -914,9 +919,20 @@ def show_tune(
             f"{answer_seconds(run):,.1f} s",
             f"{run.speed.decode_tok_s:,.1f}",
             f"{run.speed.prefill_tok_s:,.0f}",
-            f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
+            peak_vram(run),
         )
     console.print(table)
+    if any(too_full(run) for run in worked):
+        console.print(
+            f"'full' means the run left less than {SPILL_MARGIN_GB:.0f} GB of the GPU's memory "
+            "free. Those settings can slow down a lot when another program uses the GPU, so "
+            "they only win when nothing else left room."
+        )
+    if too_full(best):
+        console.print(
+            "[yellow]Every setting left the GPU's memory nearly full.[/yellow] Closing other "
+            "programs, or a smaller version of the model, leaves room to spare."
+        )
     estimate = estimate_for(best)
     if estimate is not None:
         console.print(f"'localtune predict' estimated about {estimate:,.0f} tok/s decode.")
@@ -943,6 +959,13 @@ def show_tune(
     return best
 
 
+def peak_vram(run: RunResult) -> str:
+    gpu = run.gpu
+    if gpu is None or gpu.peak_vram_gb is None:
+        return ""
+    return f"{gpu.peak_vram_gb:.1f} GB" + (" (full)" if too_full(run) else "")
+
+
 # How much the winner can be trusted (tune.py): settings within measurement noise of it are just
 # as good, and the gain only counts against llama.cpp's usual settings.
 
@@ -960,6 +983,11 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
     usual_s = answer_seconds(usual) if usual else None
     if usual is best:
         console.print("These are llama.cpp's usual settings, so there's nothing to change.")
+    elif usual is not None and too_full(usual) and not too_full(best):
+        console.print(
+            "llama.cpp's usual settings left the GPU's memory nearly full, so these leave room "
+            "for other programs instead."
+        )
     elif usual_s is not None and usual_s <= best_s * (1 + NOISE):
         console.print(
             f"Tuned is within {percent} of llama.cpp's usual settings ({describe(DEFAULTS)}), "
