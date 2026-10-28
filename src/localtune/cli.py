@@ -102,6 +102,7 @@ from localtune.tune import (
     NOISE,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
+    UBATCH_SIZES,
     answer_seconds,
     as_good_as,
     combinations,
@@ -899,8 +900,10 @@ def quoted(text: str, program: bool = False) -> str:
 # how), so the settings tried after it are tried on the fastest split. Each KV cache type gets
 # its own split: a smaller cache leaves room for more of the model on the GPU, which with a long
 # conversation can be worth more than the cache costs. Cache types whose first guess is the same
-# share one search, so a short conversation only needs one. Models that fit, files localtune
-# can't read and computers without a GPU skip this step.
+# share one search, so a short conversation only needs one. Each split is tried with flash
+# attention on and the biggest micro-batch tune tries, the setting that needs the most working
+# memory on the GPU, so every combination tried on it afterwards leaves room too. Models that
+# fit, files localtune can't read and computers without a GPU skip this step.
 
 
 def find_splits(
@@ -921,7 +924,7 @@ def find_splits(
     console.print(
         f"The model ({size / 1024**3:.1f} GB) and a {tokens:,}-token conversation don't fit "
         f"in the GPU's memory ({vram_gb:.0f} GB), so part of the model has to stay "
-        "in RAM. First finding how much fits on the GPU."
+        "in RAM. First finding how much fits on the GPU, with room for every setting tried after."
     )
 
     tries = 0
@@ -943,7 +946,11 @@ def find_splits(
         if start in searched:
             splits[cache] = searched[start]
             continue
-        cache_settings = {} if cache == "f16" else {"flash_attention": True, "kv_cache": cache}
+        cache_settings = {
+            "flash_attention": True,
+            "kv_cache": cache,
+            "ubatch_size": UBATCH_SIZES[-1],
+        }
         if cache != "f16":
             console.print(
                 f"A {cache} KV cache takes less memory, so more of the model may fit beside it. "

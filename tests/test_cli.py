@@ -631,11 +631,9 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     def split_run(llama_bench, model, options, name=None):
         if options.cpu_moe_layers < 25:
             raise BackendError("cudaMalloc failed", status="out_of_memory")
-        if options.ubatch_size is None:
-            run = example_run(llama_bench, model, options, name)
-            run.speed.decode_tok_s = 100 - options.cpu_moe_layers
-            return run
-        return tuned_run(llama_bench, model, options, name)
+        run = tuned_run(llama_bench, model, options, name)
+        run.speed.decode_tok_s -= options.cpu_moe_layers
+        return run
 
     wide_terminal(monkeypatch)
     model = fake_run(monkeypatch, tmp_path, split_run)
@@ -658,12 +656,10 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
 def test_tune_keeps_a_split_clear_of_a_nearly_full_gpu(monkeypatch, tmp_path):
     # Like above, but keeping the experts of fewer than 27 layers in RAM leaves the GPU too full.
     def split_run(llama_bench, model, options, name=None):
-        if options.ubatch_size is None:
-            run = example_run(llama_bench, model, options, name)
-            run.settings.cpu_moe_layers = options.cpu_moe_layers
-            run.speed.decode_tok_s = 100 - options.cpu_moe_layers
-            return run
-        return tuned_run(llama_bench, model, options, name)
+        run = tuned_run(llama_bench, model, options, name)
+        run.settings.cpu_moe_layers = options.cpu_moe_layers
+        run.speed.decode_tok_s -= options.cpu_moe_layers
+        return run
 
     def nearly_full(run):
         return (run.settings.cpu_moe_layers or 99) < 27
@@ -690,7 +686,7 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
 
     def remembers_options(llama_bench, model, options, name=None):
         asked.append(options)
-        if options.ubatch_size is None:
+        if options.kv_cache == "q4_0":
             return example_run(llama_bench, model, options, name)
         return tuned_run(llama_bench, model, options, name)
 
@@ -704,8 +700,11 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "detect_hardware", lambda: pc)
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert "don't fit" not in result.output
+    before = len(asked)
     result = runner.invoke(cli.app, ["tune", str(model), "--prompt-tokens", "16000"])
     assert "a 16,128-token conversation don't fit" in result.output
+    first_split = asked[before]  # tried with the micro-batch that needs the most memory
+    assert first_split.ubatch_size == 2048 and first_split.flash_attention
     assert f"localtune run {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
     assert "Trying 13 combinations" in result.output
