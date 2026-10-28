@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from localtune.hardware import cpu_threads_allowed, in_container
 from localtune.results import RunSettings, Speed
 from localtune.runners.base import BackendError, EngineRun
 
@@ -154,6 +155,17 @@ def describe_failure(stderr: str) -> BackendError:
     return BackendError(message)
 
 
+# Left to itself, llama.cpp starts one thread per CPU core of the whole computer. Inside a
+# rented container that can be many times the cores actually given, and the extra threads slow
+# the CPU's part of the work down, so there it uses the container's share instead.
+
+
+def default_threads(options: BenchOptions) -> BenchOptions:
+    if options.threads is not None or not in_container():
+        return options
+    return options.model_copy(update={"threads": cpu_threads_allowed()})
+
+
 # Writing speed depends on how much conversation the model is already holding: each new word
 # looks back over all of it, so a model writes more slowly after reading a long document than
 # with an empty conversation, which is what llama-bench's decode test starts from. For a prompt
@@ -179,6 +191,7 @@ def bench(llama_bench: str, model: Path, options: BenchOptions) -> list[dict]:
 def run_llama_bench(
     llama_bench: str, model: Path, options: BenchOptions, name: str | None = None
 ) -> EngineRun:
+    options = default_threads(options)
     if options.prompt_tokens < DEPTH_FROM:
         return parse_tests(bench(llama_bench, model, options), model, options.repetitions, name)
     read = options.model_copy(update={"gen_tokens": 0})

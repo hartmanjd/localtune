@@ -52,6 +52,18 @@ def test_command_sets_kv_cache_and_flash_attention():
     assert command[command.index("-fa") + 1] == "off"
 
 
+def test_a_container_uses_only_its_share_of_the_cpu(monkeypatch):
+    monkeypatch.setattr(llamacpp, "in_container", lambda: True)
+    monkeypatch.setattr(llamacpp, "cpu_threads_allowed", lambda: 8)
+    assert llamacpp.default_threads(BenchOptions()).threads == 8
+    assert llamacpp.default_threads(BenchOptions(threads=4)).threads == 4
+
+
+def test_outside_a_container_llama_cpp_picks_its_threads(monkeypatch):
+    monkeypatch.setattr(llamacpp, "in_container", lambda: False)
+    assert llamacpp.default_threads(BenchOptions()).threads is None
+
+
 def test_reads_speeds_and_the_settings_used():
     run = llamacpp.parse_output(EXAMPLE, MODEL, repetitions=3)
     assert run.speed.prefill_tok_s == 7612.4

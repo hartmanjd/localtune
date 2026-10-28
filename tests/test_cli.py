@@ -41,6 +41,17 @@ FAKE_PC = HardwareInfo(
     ],
 )
 
+RENTED_GPU = GpuInfo(
+    index=0,
+    name="NVIDIA GeForce RTX 3090",
+    vram_gb=24.0,
+    driver_version="580.95",
+    power_limit_w=280,
+    default_power_limit_w=350,
+    pcie_gen=3,
+    pcie_lanes=8,
+)
+
 
 def test_info_shows_the_hardware(monkeypatch):
     wide_terminal(monkeypatch)
@@ -51,6 +62,23 @@ def test_info_shows_the_hardware(monkeypatch):
     assert "(WSL)" in result.output
     assert "32.0 GB" in result.output
     assert "672 GB/s" in result.output
+
+
+def test_info_says_when_cpu_and_ram_are_a_container_s_share(monkeypatch):
+    wide_terminal(monkeypatch)
+    rented = FAKE_PC.model_copy(update={"in_container": True})
+    monkeypatch.setattr(cli, "detect_hardware", lambda: rented)
+    result = runner.invoke(cli.app, ["info"])
+    assert "this container's share" in result.output
+
+
+def test_info_shows_a_gpu_s_power_limit_and_pcie_link(monkeypatch):
+    wide_terminal(monkeypatch)
+    rented = FAKE_PC.model_copy(update={"gpus": [RENTED_GPU]})
+    monkeypatch.setattr(cli, "detect_hardware", lambda: rented)
+    result = runner.invoke(cli.app, ["info"])
+    assert "280 W (usually 350 W)" in result.output
+    assert "Gen 3 x8" in result.output
 
 
 def test_info_without_a_gpu(monkeypatch):

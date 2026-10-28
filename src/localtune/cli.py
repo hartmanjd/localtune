@@ -42,7 +42,7 @@ from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_check
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
-from localtune.hardware import detect_hardware, find_nvidia_smi
+from localtune.hardware import GpuInfo, detect_hardware, find_nvidia_smi
 from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
@@ -149,6 +149,23 @@ def main(ctx: typer.Context) -> None:
 # will be saved with every benchmark run, plus each GPU's specs from the GPU table (gpus.py).
 
 
+# A power limit below the card's usual one is pointed out: the GPU is held back, so it runs
+# slower than others of its kind. Rented GPUs are sometimes set up like that.
+
+
+def power_limit(gpu: GpuInfo) -> str:
+    if gpu.power_limit_w is None:
+        return "unknown"
+    text = f"{gpu.power_limit_w:,.0f} W"
+    if gpu.default_power_limit_w and gpu.power_limit_w < gpu.default_power_limit_w - 1:
+        text += f" (usually {gpu.default_power_limit_w:,.0f} W)"
+    return text
+
+
+def pcie_link(gpu: GpuInfo) -> str:
+    return f"Gen {gpu.pcie_gen} x{gpu.pcie_lanes}" if gpu.pcie_gen and gpu.pcie_lanes else "unknown"
+
+
 @app.command()
 def info() -> None:
     """Show this computer's OS, CPU, RAM and GPUs."""
@@ -157,8 +174,9 @@ def info() -> None:
     system = Table(title=f"localtune {__version__}", show_header=False)
     system.add_row("OS", hw.os + (" (WSL)" if hw.is_wsl else ""))
     system.add_row("CPU", hw.cpu_name or "unknown")
-    system.add_row("CPU threads", str(hw.cpu_threads or "unknown"))
-    system.add_row("RAM", f"{hw.ram_gb} GB" if hw.ram_gb else "unknown")
+    share = " (this container's share)" if hw.in_container else ""
+    system.add_row("CPU threads", f"{hw.cpu_threads}{share}" if hw.cpu_threads else "unknown")
+    system.add_row("RAM", f"{hw.ram_gb} GB{share}" if hw.ram_gb else "unknown")
     console.print(system)
 
     if not hw.gpus:
@@ -171,6 +189,8 @@ def info() -> None:
     gpus.add_column("VRAM")
     gpus.add_column("Bandwidth")
     gpus.add_column("Compute")
+    gpus.add_column("Power limit")
+    gpus.add_column("PCIe")
     gpus.add_column("Driver")
     for gpu in hw.gpus:
         spec = find_gpu_spec(gpu.name, gpu.vram_gb)
@@ -180,6 +200,8 @@ def info() -> None:
             f"{gpu.vram_gb} GB",
             f"{spec.memory_bandwidth_gbs:,.0f} GB/s" if spec else "unknown",
             f"{spec.fp32_tflops} TFLOPS" if spec else "unknown",
+            power_limit(gpu),
+            pcie_link(gpu),
             gpu.driver_version,
         )
     console.print(gpus)

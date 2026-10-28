@@ -5,6 +5,7 @@
 # never changes anything, and when something can't be found (no NVIDIA card, an unusual OS) it
 # leaves that field empty instead of crashing, so localtune still works on any machine.
 
+import math
 import os
 import platform
 import shutil
@@ -22,11 +23,18 @@ class GpuInfo(BaseModel):
     name: str
     vram_gb: float
     driver_version: str
+    power_limit_w: float | None = None
+    default_power_limit_w: float | None = None
+    max_sm_clock_mhz: float | None = None
+    max_memory_clock_mhz: float | None = None
+    pcie_gen: int | None = None
+    pcie_lanes: int | None = None
 
 
 class HardwareInfo(BaseModel):
     os: str
     is_wsl: bool
+    in_container: bool = False
     cpu_name: str | None
     cpu_threads: int | None
     ram_gb: float | None
@@ -61,7 +69,7 @@ def query_nvidia_smi(nvidia_smi: Path) -> list[GpuInfo]:
         )
     except (OSError, subprocess.SubprocessError):
         return []
-    return parse_gpu_csv(result.stdout)
+    return add_gpu_limits(nvidia_smi, parse_gpu_csv(result.stdout))
 
 
 def parse_gpu_csv(text: str) -> list[GpuInfo]:
@@ -80,6 +88,50 @@ def parse_gpu_csv(text: str) -> list[GpuInfo]:
         except ValueError:
             continue
     return gpus
+
+
+# How hard each GPU is allowed to run, and how it is connected. Two cards with the same name can
+# be different in practice: a rented one is often held to a lower power limit, and cheap hosts
+# plug cards in through slow PCIe risers. They are asked for separately, so a driver too old to
+# know one of them still reports the GPUs themselves; anything it can't tell is left empty.
+
+LIMITS_QUERY = (
+    "index,power.limit,power.default_limit,clocks.max.sm,clocks.max.mem,"
+    "pcie.link.gen.max,pcie.link.width.max"
+)
+
+
+def parse_limits_csv(text: str) -> dict[int, dict]:
+    limits = {}
+    for line in text.strip().splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 7 or number(parts[0]) is None:
+            continue
+        power, default_power, sm_clock, memory_clock, gen, lanes = map(number, parts[1:])
+        limits[int(parts[0])] = {
+            "power_limit_w": power,
+            "default_power_limit_w": default_power,
+            "max_sm_clock_mhz": sm_clock,
+            "max_memory_clock_mhz": memory_clock,
+            "pcie_gen": int(gen) if gen else None,
+            "pcie_lanes": int(lanes) if lanes else None,
+        }
+    return limits
+
+
+def add_gpu_limits(nvidia_smi: Path, gpus: list[GpuInfo]) -> list[GpuInfo]:
+    try:
+        result = subprocess.run(
+            [str(nvidia_smi), f"--query-gpu={LIMITS_QUERY}", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return gpus
+    limits = parse_limits_csv(result.stdout)
+    return [gpu.model_copy(update=limits.get(gpu.index, {})) for gpu in gpus]
 
 
 # On Linux (and WSL), CPU, RAM and WSL details come from files Linux keeps under /proc. Each
@@ -111,6 +163,68 @@ def read_text(path: str) -> str:
         return Path(path).read_text()
     except OSError:
         return ""
+
+
+def number(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+# Rented cloud GPUs run inside a container: a fenced-off share of a much bigger computer. /proc
+# still describes the whole host there (often 64+ threads and hundreds of GB of RAM), so the
+# share actually given is read from the container's limits (cgroup files) instead. This is what
+# the CPU and RAM parts of a run can really use, which matters when part of a model sits in RAM.
+
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def in_container() -> bool:
+    return any(Path(marker).exists() for marker in CONTAINER_MARKERS)
+
+
+def parse_cpu_quota(cpu_max: str) -> float | None:
+    # cgroup v2's cpu.max: "max 100000" means no limit, "800000 100000" means 8 CPUs.
+    parts = cpu_max.split()
+    if len(parts) != 2 or parts[0] == "max":
+        return None
+    quota, period = number(parts[0]), number(parts[1])
+    return quota / period if quota and period and quota > 0 else None
+
+
+def parse_memory_limit_gb(memory_max: str) -> float | None:
+    # cgroup v2 writes "max" for no limit; v1 writes a huge number instead.
+    value = number(memory_max.strip())
+    if value is None or value <= 0 or value >= 2**60:
+        return None
+    return round(value / 1024**3, 1)
+
+
+def cpu_threads_allowed() -> int | None:
+    try:
+        threads = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        threads = os.cpu_count()
+    quota = parse_cpu_quota(read_text("/sys/fs/cgroup/cpu.max"))
+    if quota is None:
+        v1_quota, v1_period = (
+            read_text("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").strip(),
+            read_text("/sys/fs/cgroup/cpu/cpu.cfs_period_us").strip(),
+        )
+        quota = parse_cpu_quota(f"{v1_quota} {v1_period}")
+    if quota is not None:
+        threads = min(threads or math.ceil(quota), max(1, math.ceil(quota)))
+    return threads
+
+
+def ram_allowed_gb(host_ram_gb: float | None) -> float | None:
+    limit = parse_memory_limit_gb(read_text("/sys/fs/cgroup/memory.max")) or parse_memory_limit_gb(
+        read_text("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    )
+    if limit is None or host_ram_gb is None:
+        return host_ram_gb or limit
+    return min(host_ram_gb, limit)
 
 
 # Windows has no /proc. It reports RAM through its own memory status call, and keeps the CPU's
@@ -164,14 +278,17 @@ def detect_hardware() -> HardwareInfo:
     nvidia_smi = find_nvidia_smi()
     if platform.system() == "Windows":
         cpu_name, ram_gb = windows_cpu_name(), windows_ram_gb()
+        cpu_threads = os.cpu_count()
     else:
         cpu_name = parse_cpu_name(read_text("/proc/cpuinfo"))
-        ram_gb = parse_ram_gb(read_text("/proc/meminfo"))
+        ram_gb = ram_allowed_gb(parse_ram_gb(read_text("/proc/meminfo")))
+        cpu_threads = cpu_threads_allowed()
     return HardwareInfo(
         os=f"{platform.system()} {platform.release()}",
         is_wsl=is_wsl(read_text("/proc/version")),
+        in_container=in_container(),
         cpu_name=cpu_name or platform.processor() or None,
-        cpu_threads=os.cpu_count(),
+        cpu_threads=cpu_threads,
         ram_gb=ram_gb,
         gpus=query_nvidia_smi(nvidia_smi) if nvidia_smi else [],
     )
