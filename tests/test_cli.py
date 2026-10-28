@@ -915,7 +915,8 @@ def fake_quality(monkeypatch, tmp_path, perplexities):
     model = fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(cli, "get_text", lambda: tmp_path / "wiki.test.raw")
 
-    def measured(tool, model_file, text, cache, placement, base, gpu, chunks):
+    def measured(tool, model_file, text, cache, placement, base, gpu, chunks, context):
+        base = base | {"context_size": context}
         if perplexities[cache] is None:
             return cli.QualityResult(
                 kv_cache=cache, model_file=model_file.name, status="out_of_memory",
@@ -958,3 +959,14 @@ def test_quality_without_llama_cpp(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["quality", str(model)])
     assert result.exit_code == 1
     assert "localtune doctor" in result.output
+
+
+def test_quality_reads_chunks_as_long_as_a_uses_conversation(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_quality(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.0, "q4_0": 6.3})
+    result = runner.invoke(cli.app, ["quality", str(model), "--use", "documents"])
+    assert "16,384-token chunks" in result.output
+    result = runner.invoke(cli.app, ["quality", str(model), "--context", "8192"])
+    assert "8,192-token chunks" in result.output
+    result = runner.invoke(cli.app, ["quality", str(model), "--use", "poems"])
+    assert result.exit_code == 1

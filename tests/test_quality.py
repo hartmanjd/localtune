@@ -43,6 +43,8 @@ def test_every_cache_type_runs_with_flash_attention_on_the_given_split():
     assert "-c 4096 --chunks 8 -fa on -ctk q4_0 -ctv q4_0" in joined
     assert "-ngl 49 --n-cpu-moe 6" in joined
     assert "-ngl" not in " ".join(build_command("p", Path("m"), Path("t"), "f16", {}))
+    longer = build_command("p", Path("m"), Path("t"), "f16", {}, context=16384)
+    assert "-c 16384" in " ".join(longer)
 
 
 def fake_perplexity(monkeypatch, output, returncode=0):
@@ -58,6 +60,7 @@ def test_a_measurement_saves_the_perplexity(monkeypatch):
     assert (result.status, result.perplexity, result.kv_cache) == ("ok", 6.1234, "q8_0")
     assert result.engine_version == "b11669 (6b1d2e9)"
     assert result.gpu_layers == 99
+    assert result.context_size == 4096
 
 
 def test_running_out_of_memory_is_saved_as_such(monkeypatch):
