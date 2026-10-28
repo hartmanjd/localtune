@@ -38,9 +38,9 @@ from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.doctor import is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
-from localtune.gpu_monitor import GpuMonitor
+from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
-from localtune.hardware import detect_hardware
+from localtune.hardware import detect_hardware, find_nvidia_smi
 from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
@@ -48,6 +48,7 @@ from localtune.install import (
     find_tool,
     install_llama_cpp,
 )
+from localtune.meter import gpu_programs, is_busy, wait_for_room
 from localtune.models import find_model
 from localtune.ollama_models import downloaded_models, find_ollama_model
 from localtune.predict import Prediction, estimate_for, predict
@@ -484,7 +485,30 @@ def warn_if_busy(gpu: int) -> Background:
             "close it first. 'ollama ps' shows a model Ollama has loaded, and 'ollama stop "
             "MODEL' frees it."
         )
+        if show_memory_meter(gpu) == "free":
+            console.print("[green]The GPU is free now.[/green]")
+            background = read_background(gpu)
     return background
+
+
+# When the GPU is the busy part and someone is watching the terminal, the live gauge of its
+# memory (meter.py) lets them close programs and see the room come back before the run starts.
+
+
+def show_memory_meter(gpu: int) -> str | None:
+    if not (can_ask() and console.is_terminal):
+        return None
+    nvidia_smi, gpus = find_nvidia_smi(), detect_hardware().gpus
+    if nvidia_smi is None or gpu >= len(gpus):
+        return None
+
+    def read() -> GpuSample | None:
+        return read_sample(nvidia_smi, gpu)
+
+    first = read()
+    if first is None or not is_busy(first):
+        return None
+    return wait_for_room(read, gpus[gpu].vram_gb, console, gpu_programs(nvidia_smi, gpu))
 
 
 # For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which
