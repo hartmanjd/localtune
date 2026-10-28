@@ -100,6 +100,7 @@ from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
     NOISE,
+    SERVER_PORT,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
     UBATCH_SIZES,
@@ -885,7 +886,7 @@ def show_server_command(
     console.print("To chat with the model at these settings, start llama.cpp's server:")
     console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
     console.print(
-        f"Then open http://localhost:8080 in your browser. It has room for a "
+        f"Then open http://localhost:{SERVER_PORT} in your browser. It has room for a "
         f"{server_context(tokens):,}-token conversation."
     )
 

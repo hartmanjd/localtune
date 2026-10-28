@@ -136,11 +136,12 @@ def test_the_winner_can_be_run_again():
 def test_the_winner_becomes_a_llama_server_command():
     run = a_run(60.0, flash_attention=True, kv_cache_k="q8_0", ubatch_size=1024)
     fits = {"gpu_layers": None, "cpu_moe_layers": None}
-    assert server_flags(run, fits, 640) == "-c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 1024"
+    flags = server_flags(run, fits, 640)
+    assert flags == "-c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 1024 -np 1 --port 8080"
     split = {"gpu_layers": 49, "cpu_moe_layers": 6}
     flags = server_flags(run, split, 640, threads=8, gpu=1)
     assert flags.startswith("-c 4096 -ngl 49 --n-cpu-moe 6 -fa on")
-    assert flags.endswith("-t 8 -mg 1")
+    assert flags.endswith("-t 8 -mg 1 -np 1 --port 8080")
 
 
 def test_the_server_gets_room_for_the_tested_conversation():
