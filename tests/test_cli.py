@@ -601,7 +601,7 @@ def test_tune_gives_a_smaller_kv_cache_its_own_split(monkeypatch, tmp_path):
     assert "Fastest split: experts of 33 of 48 layers in RAM." in result.output
     assert "Finding its split too." in result.output
     assert "Fastest split with a q8_0 KV cache: the whole model on the GPU." in result.output
-    assert "experts of 33 layers in RAM" in result.output  # the table's split column
+    assert "experts of 33 of 48 layers in RAM" in result.output  # the table's split column
     assert "whole model on the GPU" in result.output
     assert "--use documents --gpu-layers 49 --cpu-moe 0 --flash-attn --kv-cache q8_0" in (
         result.output
@@ -785,6 +785,15 @@ def test_sweep_can_tune_every_model_for_every_use(monkeypatch, tmp_path):
     assert len(saved) == 16 + 13  # code's long prompt tries flash attention off only once
     assert len({run.sweep_id for run in saved}) == 1 and saved[0].sweep_id
     assert len({run.tune_id for run in saved}) == 2
+
+
+def test_a_split_counts_layers_out_of_the_models_own():
+    # llama.cpp counts the output layer as one more, so 66 of a 65-layer model is all of it.
+    assert cli.describe_placement({"gpu_layers": 66}, layers=65) == "whole model on the GPU"
+    assert cli.describe_placement({"gpu_layers": 40}, layers=65) == "40 of 65 layers on the GPU"
+    assert cli.describe_placement({"gpu_layers": 40}) == "40 layers on the GPU"
+    moe = {"gpu_layers": 49, "cpu_moe_layers": 6}
+    assert cli.describe_placement(moe, layers=48) == "experts of 6 of 48 layers in RAM"
 
 
 def test_a_tuning_sweep_moves_on_when_nothing_fits(monkeypatch, tmp_path):
