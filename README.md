@@ -31,6 +31,10 @@ Each cost records which price it was based on.
 The tables in `src/localtune/data/` are built from these sources by
 `scripts/build_price_tables.py`.
 
+The KV cache quality check reads the test set of [WikiText-2](https://huggingface.co/datasets/Salesforce/wikitext)
+(Wikipedia articles, Merity et al., 2016, CC BY-SA 3.0), the same text llama.cpp's own quality
+comparisons use. It isn't included in localtune: it is downloaded the first time it's needed.
+
 ## License
 
 [Apache 2.0](LICENSE)
