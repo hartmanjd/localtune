@@ -13,6 +13,7 @@
 import csv
 import sys
 import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -53,12 +54,26 @@ from localtune.models import find_model
 from localtune.ollama_models import downloaded_models, find_ollama_model
 from localtune.predict import Prediction, estimate_for, predict
 from localtune.prices import find_price
+from localtune.quality import (
+    CHUNKS,
+    CONTEXT,
+    KV_CACHES,
+    TEXT_NAME,
+    QualityResult,
+    get_text,
+    loss_pct,
+    quality_file,
+    save_quality,
+    verdict,
+)
+from localtune.quality import measure as measure_quality
 from localtune.results import (
     RunResult,
     RunSettings,
     flat_record,
     load_results,
     results_file,
+    rig_id,
     save_result,
 )
 from localtune.runners.base import measure
@@ -1289,6 +1304,88 @@ def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
             f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
         )
     console.print(table)
+
+
+# "localtune quality": how much worse a q8_0 or q4_0 KV cache makes a model's answers than
+# f16 (quality.py), read from the same text with each. A model too big for the GPU starts from
+# tune's first guess at a GPU/RAM split, like sweep, unless one is given. Each result is saved
+# as soon as it finishes.
+
+
+@app.command()
+def quality(
+    model: Annotated[str, typer.Argument(help="Model file (.gguf), or an Ollama model name.")],
+    gpu_layers: int | None = typer.Option(None, help="How many layers go on the GPU."),
+    cpu_moe: int | None = typer.Option(
+        None, help="Keep the experts of this many layers in RAM (mixture-of-experts models)."
+    ),
+    chunks: int = typer.Option(CHUNKS, help=f"How many {CONTEXT:,}-token pieces of text to read."),
+    gpu: int = typer.Option(0, help="Which GPU to use."),
+) -> None:
+    """Measure how much each KV cache type changes the model's answers."""
+    llama_perplexity = find_tool("llama-perplexity")
+    if llama_perplexity is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    model_file, model_name = find_model_file(model)
+    if model_file is None:
+        explain_missing_model(model)
+        raise typer.Exit(1)
+    try:
+        with working(console, "run", f"Downloading the test text ({TEXT_NAME})..."):
+            text = get_text()
+    except (OSError, KeyError, zipfile.BadZipFile) as error:
+        console.print(f"Couldn't download the test text: {error}")
+        raise typer.Exit(1) from error
+
+    warn_if_busy(gpu)
+    given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
+    placement = given if gpu_layers or cpu_moe else guessed_split(model_file, gpu, CONTEXT)
+    base = {"rig_id": rig_id(), "model": model_name or model_file.stem}
+    base["hardware"] = detect_hardware()
+    found = []
+    for number, cache in enumerate(KV_CACHES, 1):
+        label = f"Reading {chunks * CONTEXT:,} tokens of text with a {cache} KV cache"
+        progress = (number - 1) / len(KV_CACHES)
+        with working(console, "run", f"{label} ({number} of {len(KV_CACHES)})...", progress):
+            result = measure_quality(
+                llama_perplexity, model_file, text, cache, placement, base, gpu, chunks
+            )
+        save_quality(result)
+        found.append(result)
+    show_quality(found)
+    console.print(f"Saved to {quality_file()}")
+
+
+def show_quality(found: list[QualityResult]) -> None:
+    f16 = next((r for r in found if r.kv_cache == "f16" and r.perplexity), None)
+    table = Table(title=f"{found[0].model}: answer quality by KV cache")
+    table.add_column("KV cache")
+    for column in ("Perplexity", "Vs f16"):
+        table.add_column(column, justify="right")
+    for r in found:
+        if r.perplexity is None:
+            failed = "out of GPU memory" if r.status == "out_of_memory" else "failed"
+            table.add_row(r.kv_cache, failed, "")
+            continue
+        loss = loss_pct(r, f16) if f16 and r is not f16 else None
+        table.add_row(
+            r.kv_cache,
+            f"{r.perplexity:.3f} ± {r.perplexity_error:.3f}",
+            "" if loss is None else f"{loss:+.1f}%",
+        )
+    console.print(table)
+    console.print(
+        "Perplexity is how surprised the model was by real text: lower is better. 'Vs f16' is "
+        "how much worse each smaller cache made it."
+    )
+    for r in found:
+        loss = loss_pct(r, f16) if f16 and r is not f16 else None
+        if loss is not None:
+            console.print(f"A {r.kv_cache} KV cache: {max(loss, 0):.1f}% worse, {verdict(loss)}.")
+    errors = [r for r in found if r.error]
+    for r in errors:
+        console.print(f"[red]{r.kv_cache} failed:[/red] {r.error}", highlight=False)
 
 
 # "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
