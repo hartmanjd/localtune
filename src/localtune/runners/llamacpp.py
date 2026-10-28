@@ -40,6 +40,7 @@ class BenchOptions(BaseModel):
     batch_size: int | None = None
     ubatch_size: int | None = None
     gpu_index: int = 0
+    depth: int = 0
 
 
 def build_command(llama_bench: str, model: Path, options: BenchOptions) -> list[str]:
@@ -60,6 +61,7 @@ def build_command(llama_bench: str, model: Path, options: BenchOptions) -> list[
         "-t": options.threads,
         "-b": options.batch_size,
         "-ub": options.ubatch_size,
+        "-d": options.depth or None,
     }
     for flag, value in optional.items():
         if value is not None:
@@ -86,12 +88,27 @@ def quant_name(model_type: str) -> str:
     return f"{quant}_{sizes[variant]}" if variant in sizes else quant
 
 
-def parse_output(stdout: str, model: Path, repetitions: int, name: str | None = None) -> EngineRun:
+def read_tests(stdout: str) -> list[dict]:
     try:
         tests = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise BackendError(f"couldn't read llama-bench's output ({error})") from error
+    if not isinstance(tests, list):
+        raise BackendError("couldn't read llama-bench's output (not a list of tests)")
+    return tests
+
+
+def parse_output(stdout: str, model: Path, repetitions: int, name: str | None = None) -> EngineRun:
+    return parse_tests(read_tests(stdout), model, repetitions, name)
+
+
+def parse_tests(
+    tests: list[dict], model: Path, repetitions: int, name: str | None = None
+) -> EngineRun:
+    try:
         prefill = next(t for t in tests if t["n_prompt"] > 0 and t["n_gen"] == 0)
         decode = next(t for t in tests if t["n_gen"] > 0 and t["n_prompt"] == 0)
-    except (json.JSONDecodeError, StopIteration, KeyError, TypeError) as error:
+    except (StopIteration, KeyError, TypeError) as error:
         raise BackendError(f"couldn't read llama-bench's output ({error})") from error
 
     flash = {1: True, 0: False}.get(prefill.get("flash_attn"))
@@ -110,6 +127,7 @@ def parse_output(stdout: str, model: Path, repetitions: int, name: str | None = 
         threads=prefill["n_threads"],
         batch_size=prefill["n_batch"],
         ubatch_size=prefill["n_ubatch"],
+        decode_depth=decode.get("n_depth") or None,
     )
     speed = Speed(
         prompt_tokens=prefill["n_prompt"] * repetitions,
@@ -148,10 +166,17 @@ def default_threads(options: BenchOptions) -> BenchOptions:
     return options.model_copy(update={"threads": cpu_threads_allowed()})
 
 
-def run_llama_bench(
-    llama_bench: str, model: Path, options: BenchOptions, name: str | None = None
-) -> EngineRun:
-    options = default_threads(options)
+# Writing speed depends on how much conversation the model is already holding: each new word
+# looks back over all of it, so a model writes more slowly after reading a long document than
+# with an empty conversation, which is what llama-bench's decode test starts from. For a prompt
+# of DEPTH_FROM tokens or more, llama-bench is run twice: once to read the prompt, and once to
+# write the answer with the prompt already in memory (-d), the way the model is really used.
+# Below that, the difference is too small to be worth loading the model a second time.
+
+DEPTH_FROM = 4096
+
+
+def bench(llama_bench: str, model: Path, options: BenchOptions) -> list[dict]:
     try:
         result = subprocess.run(
             build_command(llama_bench, model, options), capture_output=True, text=True
@@ -160,7 +185,19 @@ def run_llama_bench(
         raise BackendError(f"couldn't start llama-bench ({error})") from error
     if result.returncode != 0:
         raise describe_failure(result.stderr)
-    return parse_output(result.stdout, model, options.repetitions, name)
+    return read_tests(result.stdout)
+
+
+def run_llama_bench(
+    llama_bench: str, model: Path, options: BenchOptions, name: str | None = None
+) -> EngineRun:
+    options = default_threads(options)
+    if options.prompt_tokens < DEPTH_FROM:
+        return parse_tests(bench(llama_bench, model, options), model, options.repetitions, name)
+    read = options.model_copy(update={"gen_tokens": 0})
+    write = options.model_copy(update={"prompt_tokens": 0, "depth": options.prompt_tokens})
+    tests = bench(llama_bench, model, read) + bench(llama_bench, model, write)
+    return parse_tests(tests, model, options.repetitions, name)
 
 
 # The settings that were asked for, saved in place of the ones llama-bench used when it fails

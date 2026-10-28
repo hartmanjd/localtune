@@ -31,7 +31,8 @@ SCHEMA_VERSION = 1
 
 # What was run: the engine (llama.cpp, Ollama, ...), the model and the settings it was run
 # with. These are the knobs tuning turns, so each one gets its own field. Anything an engine
-# doesn't have, or a run didn't set, stays empty.
+# doesn't have, or a run didn't set, stays empty. decode_depth is how much conversation the
+# model was already holding when its writing speed was measured (runners/llamacpp.py).
 
 
 class RunSettings(BaseModel):
@@ -49,6 +50,7 @@ class RunSettings(BaseModel):
     threads: int | None = None
     batch_size: int | None = None
     ubatch_size: int | None = None
+    decode_depth: int | None = None
 
 
 # How fast it went: how many tokens were read and written, the speed of each, the wait

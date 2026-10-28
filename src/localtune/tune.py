@@ -134,9 +134,13 @@ def run_flags(run: RunResult) -> str:
 # for real and not only benchmarked. The server sets aside memory for the whole conversation up
 # front (-c), so it gets room for the conversation that was tested, rounded up, and at least
 # SERVER_CONTEXT tokens so a short test still leaves room to chat. A model that fit on the GPU
-# runs with all its layers there, like it did in the benchmark.
+# runs with all its layers there, like it did in the benchmark. It serves one conversation at a
+# time (-np 1), like the benchmark measured: by default it makes room for several, which can
+# fill the GPU past what tune left free. It is given its port too, so the address to open is
+# always the one shown.
 
 SERVER_CONTEXT = 4096
+SERVER_PORT = 8080
 ALL_LAYERS = 999
 
 
@@ -159,6 +163,8 @@ def server_flags(
         "-ub": s.ubatch_size,
         "-t": threads,
         "-mg": gpu or None,
+        "-np": 1,
+        "--port": SERVER_PORT,
     }
     return " ".join(f"{flag} {value}" for flag, value in flags.items() if value is not None)
 

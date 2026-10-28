@@ -38,7 +38,7 @@ from localtune.animations import left_words, play_logo, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
-from localtune.doctor import is_ready, needs_llama_cpp, run_checks
+from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
@@ -100,8 +100,10 @@ from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
     NOISE,
+    SERVER_PORT,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
+    UBATCH_SIZES,
     answer_seconds,
     as_good_as,
     combinations,
@@ -725,6 +727,11 @@ def tune(
         "--quality/--no-quality",
         help="When a q8_0 or q4_0 KV cache wins, measure how much it changes the answers.",
     ),
+    against_ollama: bool = typer.Option(
+        True,
+        "--ollama/--no-ollama",
+        help="For a model downloaded with Ollama, run the same test in Ollama too, if it runs.",
+    ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
     given_prompt, given_gen = prompt_tokens, gen_tokens
@@ -791,7 +798,59 @@ def tune(
                 f"A {cache} KV cache saves memory but can make answers slightly worse than f16. "
                 f"'localtune quality {model}' measures how much."
             )
+    if against_ollama and model_name:
+        compare_with_ollama(best, model_name, prompt_tokens, gen_tokens, repetitions, electricity)
     console.print(f"All runs saved to {results_file()}")
+
+
+# After tuning a model downloaded with Ollama: the same test in Ollama itself, at its own
+# settings, since that's how most people run it (runners/web_api.py). It comes last, after
+# everything else that needs the GPU, because Ollama keeps the model loaded for a few minutes
+# afterwards. When Ollama is as fast as the tuned settings (within NOISE) or faster, the advice
+# is to keep using it: tuning can't make the model meaningfully faster on this computer. The
+# run is saved with the session's tune_id, so the comparison stays with the runs it was made
+# for.
+
+
+def compare_with_ollama(
+    best: RunResult,
+    model_name: str,
+    prompt_tokens: int,
+    gen_tokens: int,
+    repetitions: int,
+    electricity,
+) -> None:
+    server = find_server(f"http://127.0.0.1:{KNOWN_SERVERS['Ollama']}")
+    name = pick_model(server.models, model_name) if server and server.name == "Ollama" else None
+    if name is None:
+        console.print("Start Ollama to compare these settings with it next time.")
+        return
+    options = ApiOptions(
+        prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, repetitions=repetitions
+    )
+    requested = web_api_settings(server, name, options)
+    usual = usual_seconds(requested, prompt_tokens, gen_tokens, repetitions)
+    engine = partial(run_web_api, server, name, options)
+    with working(
+        console, "run", f"Running the same test in Ollama {server.version}...", None, usual
+    ):
+        result = measure(engine, requested, electricity, repetitions, gpu_index=best.gpu_index)
+    result.tune_id, result.use = best.tune_id, best.use
+    save_result(result)
+
+    ollama_s, best_s = answer_seconds(result), answer_seconds(best)
+    if ollama_s is None:
+        console.print(f"Ollama's run didn't work, so there's nothing to compare: {result.error}")
+    elif ollama_s <= best_s * (1 + NOISE):
+        console.print(
+            f"[green]Ollama is already as fast as these settings[/green] ({ollama_s:,.1f} s per "
+            f"answer, tuned {best_s:,.1f} s), so you can keep using Ollama as it is."
+        )
+    else:
+        console.print(
+            f"Tuned is {ollama_s / best_s - 1:.0%} faster than Ollama ({best_s:,.1f} s per "
+            f"answer instead of {ollama_s:,.1f} s)."
+        )
 
 
 # One tuning session: finding the GPU/RAM split a model too big for the GPU needs, then
@@ -906,7 +965,7 @@ def show_server_command(
     console.print("To chat with the model at these settings, start llama.cpp's server:")
     console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
     console.print(
-        f"Then open http://localhost:8080 in your browser. It has room for a "
+        f"Then open http://localhost:{SERVER_PORT} in your browser. It has room for a "
         f"{server_context(tokens):,}-token conversation."
     )
 
@@ -921,8 +980,10 @@ def quoted(text: str, program: bool = False) -> str:
 # how), so the settings tried after it are tried on the fastest split. Each KV cache type gets
 # its own split: a smaller cache leaves room for more of the model on the GPU, which with a long
 # conversation can be worth more than the cache costs. Cache types whose first guess is the same
-# share one search, so a short conversation only needs one. Models that fit, files localtune
-# can't read and computers without a GPU skip this step.
+# share one search, so a short conversation only needs one. Each split is tried with flash
+# attention on and the biggest micro-batch tune tries, the setting that needs the most working
+# memory on the GPU, so every combination tried on it afterwards leaves room too. Models that
+# fit, files localtune can't read and computers without a GPU skip this step.
 
 
 def find_splits(
@@ -943,7 +1004,7 @@ def find_splits(
     console.print(
         f"The model ({size / 1024**3:.1f} GB) and a {tokens:,}-token conversation don't fit "
         f"in the GPU's memory ({vram_gb:.0f} GB), so part of the model has to stay "
-        "in RAM. First finding how much fits on the GPU."
+        "in RAM. First finding how much fits on the GPU, with room for every setting tried after."
     )
 
     tries = 0
@@ -965,7 +1026,11 @@ def find_splits(
         if start in searched:
             splits[cache] = searched[start]
             continue
-        cache_settings = {} if cache == "f16" else {"flash_attention": True, "kv_cache": cache}
+        cache_settings = {
+            "flash_attention": True,
+            "kv_cache": cache,
+            "ubatch_size": UBATCH_SIZES[-1],
+        }
         if cache != "f16":
             console.print(
                 f"A {cache} KV cache takes less memory, so more of the model may fit beside it. "
