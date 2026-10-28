@@ -175,7 +175,8 @@ def server_flags(
 # tune.py makes a first guess from the file size and the GPU's memory, then tries one more
 # and one fewer, keeping the fastest, so only a handful of runs are needed. A long conversation
 # needs its own memory on the GPU (the KV cache), so the longer it is, the less of the model
-# fits beside it.
+# fits beside it. A search usually takes about SPLIT_TRIES runs, which is what the time left
+# while it runs is estimated from.
 
 RESERVED_GB = 1.5  # left free for the desktop, the KV cache and llama.cpp's working memory
 
@@ -184,6 +185,7 @@ RESERVED_GB = 1.5  # left free for the desktop, the KV cache and llama.cpp's wor
 # with a long conversation each cache type gets its own split (cli.py), instead of all of them
 # being tried on the split that suits f16.
 KV_CACHE_SIZE = {"f16": 1.0, "q8_0": 34 / 64, "q4_0": 18 / 64}
+SPLIT_TRIES = 4
 
 
 def split_settings(on_gpu: int, layout: ModelLayout) -> dict:

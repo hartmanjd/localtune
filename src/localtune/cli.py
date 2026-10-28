@@ -28,12 +28,13 @@ from rich.progress import (
     DownloadColumn,
     Progress,
     TextColumn,
+    TimeRemainingColumn,
     TransferSpeedColumn,
 )
 from rich.table import Table
 
 from localtune import __version__
-from localtune.animations import play_logo, working
+from localtune.animations import left_words, play_logo, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
@@ -100,6 +101,7 @@ from localtune.tune import (
     KV_CACHE_SIZE,
     NOISE,
     SPILL_MARGIN_GB,
+    SPLIT_TRIES,
     answer_seconds,
     as_good_as,
     combinations,
@@ -330,6 +332,7 @@ def offer_llama_cpp(ask: bool) -> bool:
         BarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),
+        TimeRemainingColumn(),
     )
     with Progress(*columns, console=console, transient=True) as progress:
         tasks = {}
@@ -346,6 +349,28 @@ def offer_llama_cpp(ask: bool) -> bool:
             return False
     console.print(f"Installed llama.cpp in {folder}")
     return True
+
+
+# How long a run usually takes on this computer: as long as the last saved run of the same
+# model, engine and lengths, which is what the time left while it runs is estimated from. The
+# first run of a model has nothing to go by, so it only shows how long it has been running.
+
+
+def usual_seconds(
+    requested: RunSettings, prompt_tokens: int, gen_tokens: int, repetitions: int
+) -> float | None:
+    same = [
+        run.gpu.duration_s
+        for run in load_results()
+        if run.status == "ok"
+        and run.gpu is not None
+        and run.speed is not None
+        and (run.settings.engine, run.settings.model) == (requested.engine, requested.model)
+        and run.repetitions == repetitions
+        and run.speed.prompt_tokens == prompt_tokens * repetitions
+        and run.speed.generated_tokens == gen_tokens * repetitions
+    ]
+    return same[-1] if same else None
 
 
 # "localtune run": benchmarks a model and saves the result. With llama.cpp (the default) it
@@ -456,7 +481,8 @@ def run(
         label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    with working(console, "run", label):
+    usual = usual_seconds(requested, prompt_tokens, gen_tokens, repetitions)
+    with working(console, "run", label, left_s=usual):
         result = measure(
             engine, requested, electricity, repetitions, gpu_index=gpu, background=background
         )
@@ -762,6 +788,8 @@ class TuneSession:
     planned: int = 0
     placements: dict[str, dict | None] = field(default_factory=dict)
     layers: int | None = None
+    benched: int = 0
+    expected: int = 0
 
     def placement_of(self, run: RunResult) -> dict:
         return self.placements.get(run.settings.kv_cache_k) or self.given
@@ -798,9 +826,9 @@ def tune_model(
     except (GgufError, OSError):
         session.layers = None
 
-    def bench(
-        settings: dict, label: str, placement: dict | None = None, progress: float | None = None
-    ) -> RunResult:
+    started = time.monotonic()
+
+    def bench(settings: dict, label: str, placement: dict | None = None) -> RunResult:
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -811,27 +839,33 @@ def tune_model(
         )
         engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
         requested = requested_settings(model_file, options, model_name)
-        with working(console, "tune", label, progress):
+        done, expected = session.benched, max(session.expected, session.benched + 1)
+        left = seconds_left(time.monotonic() - started, done, expected)
+        with working(console, "tune", label, done / expected, left):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+        session.benched += 1
         result.tune_id, result.sweep_id, result.use = tune_id, sweep_id, use
         save_result(result)
         return result
 
     combos = combinations(prompt_tokens)
-    session.planned = len(combos)
+    session.planned = session.expected = len(combos)
     if all(value is None for value in session.given.values()):
         tokens = prompt_tokens + gen_tokens
-        session.placements = find_splits(model_file, gpu, bench, tokens) or session.placements
+
+        def expect(split_runs: int) -> None:
+            session.expected = split_runs + len(combos)
+
+        found = find_splits(model_file, gpu, bench, tokens, expect)
+        session.placements = found or session.placements
     combos = [c for c in combos if session.placements[c["kv_cache"]] is not None]
     session.planned = len(combos)
+    session.expected = session.benched + len(combos)
     name = model_name or model_file.name
     console.print(f"Trying {len(combos)} combinations of settings on {name}, one at a time.")
-    started = time.monotonic()
     for number, settings in enumerate(combos, 1):
-        left = time_left(time.monotonic() - started, number - 1, len(combos))
-        label = f"Run {number} of {len(combos)}: {describe(settings)}{left}"
-        progress = (number - 1) / len(combos)
-        result = bench(settings, label, session.placements[settings["kv_cache"]], progress)
+        label = f"Run {number} of {len(combos)}: {describe(settings)}"
+        result = bench(settings, label, session.placements[settings["kv_cache"]])
         session.runs.append(result)
         console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
 
@@ -869,7 +903,9 @@ def quoted(text: str, program: bool = False) -> str:
 # can't read and computers without a GPU skip this step.
 
 
-def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dict | None] | None:
+def find_splits(
+    model_file: Path, gpu: int, bench, tokens: int, expect: Callable[[int], None] = lambda n: None
+) -> dict[str, dict | None] | None:
     gpus = detect_hardware().gpus
     if gpu >= len(gpus):
         return None
@@ -888,7 +924,11 @@ def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dic
         "in RAM. First finding how much fits on the GPU."
     )
 
+    tries = 0
+
     def try_split(on_gpu: int, cache_settings: dict, cache: str) -> float | None:
+        nonlocal tries
+        tries += 1
         label = describe_split(on_gpu, layout) + ("" if cache == "f16" else f", KV {cache}")
         result = bench(split_settings(on_gpu, layout) | cache_settings, f"Trying {label}")
         console.print(f"  Split: {label}: {outcome(result)}")
@@ -896,6 +936,8 @@ def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dic
 
     splits: dict[str, dict | None] = {}
     searched: dict[int, dict | None] = {}
+    starts = {layout.layers if guess is None else guess for guess in guesses.values()}
+    expect(SPLIT_TRIES * len(starts))
     for cache, guess in guesses.items():
         start = layout.layers if guess is None else guess
         if start in searched:
@@ -915,6 +957,7 @@ def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dic
             cache_note = "" if cache == "f16" else f" with a {cache} KV cache"
             console.print(f"Fastest split{cache_note}: {describe_split(best, layout)}.")
         searched[start] = splits[cache] = split
+        expect(tries + SPLIT_TRIES * (len(starts) - len(searched)))
 
     if all(split is None for split in splits.values()):
         console.print(
@@ -925,11 +968,13 @@ def find_splits(model_file: Path, gpu: int, bench, tokens: int) -> dict[str, dic
     return splits
 
 
+def seconds_left(elapsed_s: float, done: int, total: int) -> float | None:
+    return elapsed_s / done * (total - done) if done else None
+
+
 def time_left(elapsed_s: float, done: int, total: int) -> str:
-    if done == 0:
-        return ""
-    minutes = round(elapsed_s / done * (total - done) / 60)
-    return f" (about {minutes} min left)" if minutes >= 1 else " (under a minute left)"
+    left = seconds_left(elapsed_s, done, total)
+    return f" ({left_words(left)})" if left is not None else ""
 
 
 def outcome(result: RunResult) -> str:
@@ -1150,9 +1195,9 @@ def sweep(
                 )
                 engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
                 requested = requested_settings(model_file, options, model_name)
-                left = time_left(time.monotonic() - started, done, planned)
-                label = f"Run {done + 1} of {planned}: {model}, {use_name}{left}"
-                with working(console, "sweep", label, done / planned):
+                left = seconds_left(time.monotonic() - started, done, planned)
+                label = f"Run {done + 1} of {planned}: {model}, {use_name}"
+                with working(console, "sweep", label, done / planned, left):
                     result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
                 result.sweep_id, result.use = sweep_id, use_name
                 save_result(result)
@@ -1394,21 +1439,23 @@ def measure_caches(
         return None
     base = {"rig_id": rig_id(), "model": model_name or model_file.stem}
     base["hardware"] = detect_hardware()
-    found = []
-    for number, (cache, placement) in enumerate(caches.items(), 1):
+    found = {}
+    for cache in caches:
         known = earlier(base["rig_id"], base["model"], cache, context) if reuse else None
         if known is not None:
-            found.append(known)
-            continue
+            found[cache] = known
+    to_read = [cache for cache in caches if cache not in found]
+    started = time.monotonic()
+    for done, cache in enumerate(to_read):
         label = f"Reading {chunks} chunks of {context:,} tokens with a {cache} KV cache"
-        progress = (number - 1) / len(caches)
-        with working(console, "run", f"{label} ({number} of {len(caches)})...", progress):
-            result = measure_quality(
-                llama_perplexity, model_file, text, cache, placement, base, gpu, chunks, context
+        label += f" ({done + 1} of {len(to_read)})..."
+        left = seconds_left(time.monotonic() - started, done, len(to_read))
+        with working(console, "run", label, done / len(to_read), left):
+            found[cache] = measure_quality(
+                llama_perplexity, model_file, text, cache, caches[cache], base, gpu, chunks, context
             )
-        save_quality(result)
-        found.append(result)
-    return found
+        save_quality(found[cache])
+    return [found[cache] for cache in caches]
 
 
 def show_quality(found: list[QualityResult]) -> None:

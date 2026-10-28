@@ -4,6 +4,7 @@
 
 import csv
 import itertools
+from contextlib import contextmanager
 from pathlib import Path
 
 from rich.console import Console
@@ -577,6 +578,53 @@ def test_tune_keeps_settings_that_arent_tuned(monkeypatch, tmp_path):
     assert {options.gpu_layers for options in asked} == {30}
 
 
+def record_loaders(monkeypatch) -> list[tuple[str, float | None, float | None]]:
+    # Each loading animation's label, how far along the command was and the time left it showed.
+    shown = []
+
+    @contextmanager
+    def working(console, scene, label, progress=None, left_s=None):
+        shown.append((label, progress, left_s))
+        yield
+
+    monkeypatch.setattr(cli, "working", working)
+    return shown
+
+
+def test_tune_counts_the_split_search_in_its_progress(monkeypatch, tmp_path):
+    def split_run(llama_bench, model, options, name=None):
+        if options.cpu_moe_layers < 25:
+            raise BackendError("cudaMalloc failed", status="out_of_memory")
+        return tuned_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, split_run)
+    model.write_bytes(b"x" * 4800)
+    monkeypatch.setattr(
+        cli, "read_layout", lambda path: ModelLayout(layers=48, experts=128, expert_share=0.9)
+    )
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    shown = record_loaders(monkeypatch)
+    runner.invoke(cli.app, ["tune", str(model), "--no-quality"])
+    progress = [p for label, p, left in shown]
+    assert shown[0][0].startswith("Trying experts in RAM for") and progress[0] == 0
+    assert progress == sorted(progress) and progress[-1] < 1
+    assert shown[0][2] is None and all(left is not None for label, p, left in shown[1:])
+
+
+def test_run_expects_to_take_as_long_as_the_last_run_like_it(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    monkeypatch.setattr(base, "GpuMonitor", fake_monitor(power_w=250))
+    shown = record_loaders(monkeypatch)
+    runner.invoke(cli.app, ["run", str(model)])
+    runner.invoke(cli.app, ["run", str(model), "--use", "documents"])
+    runner.invoke(cli.app, ["run", str(model)])
+    assert shown[0][2] is None and shown[1][2] is None
+    assert shown[2][2] == load_results()[0].gpu.duration_s
+
+
 def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     # A mixture-of-experts model twice the GPU's free memory, where keeping the experts of
     # fewer than 25 layers in RAM runs out of GPU memory and more in RAM is slower.
@@ -734,6 +782,7 @@ def test_tune_without_llama_cpp(monkeypatch, tmp_path):
 
 
 def test_tune_says_how_long_is_left():
+    assert cli.seconds_left(60, 2, 16) == 420
     assert cli.time_left(0, 0, 16) == ""
     assert cli.time_left(60, 2, 16) == " (about 7 min left)"
     assert cli.time_left(10, 15, 16) == " (under a minute left)"
