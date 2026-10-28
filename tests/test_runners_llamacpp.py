@@ -116,6 +116,38 @@ def test_runs_llama_bench(tmp_path):
     assert run.speed.decode_tok_s == 133.2
 
 
+def test_a_long_prompt_is_written_after_with_the_prompt_in_memory(tmp_path):
+    # The pretend llama-bench answers the reading test, or the writing test when given -d.
+    (tmp_path / "out.json").write_text(EXAMPLE)
+    (tmp_path / "calls.txt").write_text("")
+    llama_bench = pretend_llama_bench(
+        tmp_path,
+        "import json, sys\n"
+        f"tests = json.load(open({str(tmp_path / 'out.json')!r}))\n"
+        f"open({str(tmp_path / 'calls.txt')!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "if '-d' in sys.argv:\n"
+        "    tests[1].update(n_depth=int(sys.argv[sys.argv.index('-d') + 1]), avg_ts=90.0)\n"
+        "    print(json.dumps([tests[1]]))\n"
+        "else:\n"
+        "    print(json.dumps([tests[0]]))\n",
+    )
+    run = llamacpp.run_llama_bench(llama_bench, MODEL, BenchOptions(prompt_tokens=16000))
+    read, write = (tmp_path / "calls.txt").read_text().splitlines()
+    assert "-p 16000 -n 0" in read and "-d" not in read
+    assert "-p 0 -n 128" in write and "-d 16000" in write
+    assert run.speed.decode_tok_s == 90.0
+    assert run.settings.decode_depth == 16000
+
+
+def test_a_short_prompt_is_one_run(tmp_path):
+    (tmp_path / "out.json").write_text(EXAMPLE)
+    llama_bench = pretend_llama_bench(
+        tmp_path, f"print(open({str(tmp_path / 'out.json')!r}).read())"
+    )
+    run = llamacpp.run_llama_bench(llama_bench, MODEL, BenchOptions(prompt_tokens=512))
+    assert run.settings.decode_depth is None
+
+
 def test_a_failed_run_raises(tmp_path):
     llama_bench = pretend_llama_bench(
         tmp_path,
