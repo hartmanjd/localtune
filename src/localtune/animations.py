@@ -304,15 +304,46 @@ LOADERS: dict[str, Callable[[float, float | None], list[Text]]] = {
 LABEL_ROW = {"doctor": 1}
 
 
+# Beside every animation's label: how long the step has been running, and, when it can
+# be estimated (cli.py works it out from the runs so far, or from the last run like it), how much
+# longer the whole command should take, counting down as it goes. A single step with an estimate
+# also fills its bar as the time passes.
+
+
+def clock(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def left_words(seconds: float) -> str:
+    if seconds <= 0:
+        return "almost done"
+    if seconds < 60:
+        return "under a minute left"
+    minutes = round(seconds / 60)
+    if minutes < 90:
+        return f"about {minutes} min left"
+    return f"about {minutes // 60} h {minutes % 60} min left"
+
+
 class Loader:
-    def __init__(self, scene: str, label: str, progress: float | None) -> None:
-        self.scene, self.label, self.progress = scene, label, progress
+    def __init__(
+        self, scene: str, label: str, progress: float | None, left_s: float | None = None
+    ) -> None:
+        self.scene, self.label, self.progress, self.left_s = scene, label, progress, left_s
         self.started = time.monotonic()
 
     def frame(self, seconds: float) -> Text:
-        rows = LOADERS[self.scene](seconds, self.progress)
+        progress = self.progress
+        if progress is None and self.left_s:
+            progress = min(seconds / self.left_s, 0.99)
+        rows = LOADERS[self.scene](seconds, progress)
         at = LABEL_ROW.get(self.scene, len(rows) - 1)
-        rows[at] = rows[at] + Text(self.label)
+        status = clock(seconds)
+        if self.left_s is not None:
+            status += f" · {left_words(self.left_s - seconds)}"
+        rows[at] = rows[at] + Text(self.label) + Text(f"  {status}", style="grey50")
         return Text("  ") + Text("\n  ").join(rows)
 
     def __rich__(self) -> Text:
@@ -321,13 +352,21 @@ class Loader:
 
 @contextmanager
 def working(
-    console: Console, scene: str, label: str, progress: float | None = None
+    console: Console,
+    scene: str,
+    label: str,
+    progress: float | None = None,
+    left_s: float | None = None,
 ) -> Iterator[None]:
     if not enabled(console):
-        with console.status(label):
+        left = f" ({left_words(left_s)})" if left_s is not None else ""
+        with console.status(label + left):
             yield
         return
     with Live(
-        Loader(scene, label, progress), console=console, refresh_per_second=FPS, transient=True
+        Loader(scene, label, progress, left_s),
+        console=console,
+        refresh_per_second=FPS,
+        transient=True,
     ):
         yield

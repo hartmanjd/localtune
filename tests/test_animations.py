@@ -9,7 +9,17 @@ import pytest
 from rich.console import Console
 
 from localtune import animations
-from localtune.animations import LOADERS, LOGO, Loader, enabled, logo_scene, play_logo, working
+from localtune.animations import (
+    LOADERS,
+    LOGO,
+    Loader,
+    clock,
+    enabled,
+    left_words,
+    logo_scene,
+    play_logo,
+    working,
+)
 
 
 def terminal() -> Console:
@@ -39,6 +49,20 @@ def test_every_loader_is_small_and_shows_its_label(scene, progress):
         assert len(lines) <= 4
         assert all(len(line) <= 60 for line in lines)
         assert sum("Run 3 of 12" in line for line in lines) == 1
+
+
+def test_a_loader_shows_how_long_it_has_run_and_how_long_is_left():
+    assert "1:05" in Loader("run", "Run", None).frame(65).plain
+    assert "0:30 · about 2 min left" in Loader("run", "Run", None, 150).frame(30).plain
+    assert "almost done" in Loader("run", "Run", None, 10).frame(20).plain
+    assert Loader("run", "", None, 100).frame(50).plain.count("=") == 5
+
+
+def test_times_read_plainly():
+    assert clock(5) == "0:05" and clock(3725) == "1:02:05"
+    assert left_words(30) == "under a minute left"
+    assert left_words(420) == "about 7 min left"
+    assert left_words(6000) == "about 1 h 40 min left"
 
 
 def test_the_bar_fills_as_the_runs_finish():
