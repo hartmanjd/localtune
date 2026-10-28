@@ -178,7 +178,7 @@ def test_first_guess_for_a_mixture_of_experts_model_moves_only_experts():
     guess = first_guess(18 * GB, MOE, vram_gb=16)
     assert guess == 37
     assert split_settings(guess, MOE) == {"gpu_layers": 49, "cpu_moe_layers": 11}
-    assert describe_split(guess, MOE) == "experts of 11 of 48 layers in RAM"
+    assert describe_split(guess, MOE) == "experts in RAM for 11 of 48 layers"
 
 
 def test_a_long_conversation_leaves_less_room_for_the_model():

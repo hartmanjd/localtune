@@ -196,7 +196,7 @@ def describe_split(on_gpu: int, layout: ModelLayout) -> str:
     if on_gpu >= layout.layers:
         return "the whole model on the GPU"
     if layout.experts:
-        return f"experts of {layout.layers - on_gpu} of {layout.layers} layers in RAM"
+        return f"experts in RAM for {layout.layers - on_gpu} of {layout.layers} layers"
     return f"{on_gpu} of {layout.layers} layers on the GPU"
 
 

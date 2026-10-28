@@ -601,7 +601,7 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert result.exit_code == 0
     assert "don't fit in the GPU's memory" in result.output
-    assert "Fastest split: experts of 25 of 48 layers in RAM." in result.output
+    assert "Fastest split: experts in RAM for 25 of 48 layers." in result.output
     assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
     assert "-ngl 49 --n-cpu-moe 25 -fa on" in result.output
     assert len(load_results()) == 4 + 16
@@ -633,7 +633,7 @@ def test_tune_keeps_a_split_clear_of_a_nearly_full_gpu(monkeypatch, tmp_path):
     monkeypatch.setattr(tune, "too_full", nearly_full)
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert result.exit_code == 0
-    assert "Fastest split: experts of 27 of 48 layers in RAM." in result.output
+    assert "Fastest split: experts in RAM for 27 of 48 layers." in result.output
 
 
 def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
@@ -699,10 +699,10 @@ def test_tune_gives_a_smaller_kv_cache_its_own_split(monkeypatch, tmp_path):
     )
     result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
     assert result.exit_code == 0
-    assert "Fastest split: experts of 33 of 48 layers in RAM." in result.output
+    assert "Fastest split: experts in RAM for 33 of 48 layers." in result.output
     assert "Finding its split too." in result.output
     assert "Fastest split with a q8_0 KV cache: the whole model on the GPU." in result.output
-    assert "experts of 33 of 48 layers in RAM" in result.output  # the table's split column
+    assert "experts in RAM for 33 of 48 layers" in result.output  # the table's split column
     assert "whole model on the GPU" in result.output
     assert "--use documents --gpu-layers 49 --cpu-moe 0 --flash-attn --kv-cache q8_0" in (
         result.output
@@ -894,7 +894,7 @@ def test_a_split_counts_layers_out_of_the_models_own():
     assert cli.describe_placement({"gpu_layers": 40}, layers=65) == "40 of 65 layers on the GPU"
     assert cli.describe_placement({"gpu_layers": 40}) == "40 layers on the GPU"
     moe = {"gpu_layers": 49, "cpu_moe_layers": 6}
-    assert cli.describe_placement(moe, layers=48) == "experts of 6 of 48 layers in RAM"
+    assert cli.describe_placement(moe, layers=48) == "experts in RAM for 6 of 48 layers"
 
 
 def test_a_tuning_sweep_moves_on_when_nothing_fits(monkeypatch, tmp_path):
