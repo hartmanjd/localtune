@@ -505,7 +505,7 @@ def test_tune_can_skip_the_quality_check(monkeypatch, tmp_path):
     measured = pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.006})
     result = runner.invoke(cli.app, ["tune", str(model), "--no-quality"])
     assert measured == []
-    assert f"'localtune quality {model}' measures how much" in result.output
+    assert "A q8_0 KV cache saves memory" in result.output
 
 
 def test_tune_says_when_tuning_made_no_real_difference(monkeypatch, tmp_path):
