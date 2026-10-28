@@ -29,6 +29,7 @@ class GpuSample(BaseModel):
     vram_used_gb: float
     utilization_pct: float
     temperature_c: float
+    sm_clock_mhz: float | None = None
 
 
 class GpuSummary(BaseModel):
@@ -43,18 +44,19 @@ class GpuSummary(BaseModel):
     added_vram_gb: float
     avg_utilization_pct: float
     peak_temperature_c: float
+    busy_avg_sm_clock_mhz: float | None = None
 
 
-# Taking one reading. nvidia-smi is asked for four numbers about one GPU. Some GPUs don't
-# report power, which nvidia-smi shows as "[N/A]"; that reading keeps the rest and leaves
-# power empty.
+# Taking one reading. nvidia-smi is asked for five numbers about one GPU. Some GPUs don't
+# report power or clock speed, which nvidia-smi shows as "[N/A]"; that reading keeps the rest
+# and leaves those empty.
 
-SAMPLE_QUERY = "power.draw,memory.used,utilization.gpu,temperature.gpu"
+SAMPLE_QUERY = "power.draw,memory.used,utilization.gpu,temperature.gpu,clocks.sm"
 
 
 def parse_sample(text: str, time_s: float) -> GpuSample | None:
     try:
-        power, memory_mib, utilization, temperature = (
+        power, memory_mib, utilization, temperature, sm_clock = (
             part.strip() for part in text.strip().split(",")
         )
         return GpuSample(
@@ -63,6 +65,7 @@ def parse_sample(text: str, time_s: float) -> GpuSample | None:
             vram_used_gb=round(float(memory_mib) / 1024, 2),
             utilization_pct=float(utilization),
             temperature_c=float(temperature),
+            sm_clock_mhz=None if sm_clock.startswith("[") else float(sm_clock),
         )
     except ValueError:
         return None
@@ -93,6 +96,8 @@ def read_sample(nvidia_smi: Path, gpu_index: int = 0) -> GpuSample | None:
 # from memory other programs were already using. "Busy" power averages only the readings where
 # the GPU was actually working, leaving out quiet moments like loading a model from disk, so
 # the energy of the work itself can be told apart from the whole run's (results.py uses it).
+# The busy readings' average clock speed shows a GPU slowing itself down when it runs hot or
+# hits its power limit, which is common in packed rental servers.
 
 BUSY_UTILIZATION_PCT = 20
 
@@ -116,6 +121,11 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
         for s in samples
         if s.power_w is not None and s.utilization_pct >= BUSY_UTILIZATION_PCT
     ]
+    busy_clocks = [
+        s.sm_clock_mhz
+        for s in samples
+        if s.sm_clock_mhz is not None and s.utilization_pct >= BUSY_UTILIZATION_PCT
+    ]
     peak_vram = max(s.vram_used_gb for s in samples)
     return GpuSummary(
         duration_s=samples[-1].time_s - samples[0].time_s,
@@ -129,6 +139,7 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
         added_vram_gb=max(0.0, peak_vram - baseline.vram_used_gb),
         avg_utilization_pct=sum(s.utilization_pct for s in samples) / len(samples),
         peak_temperature_c=max(s.temperature_c for s in samples),
+        busy_avg_sm_clock_mhz=sum(busy_clocks) / len(busy_clocks) if busy_clocks else None,
     )
 
 
