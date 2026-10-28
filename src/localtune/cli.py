@@ -38,7 +38,7 @@ from localtune.animations import left_words, play_logo, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
-from localtune.doctor import is_ready, needs_llama_cpp, run_checks
+from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
@@ -705,6 +705,11 @@ def tune(
         "--quality/--no-quality",
         help="When a q8_0 or q4_0 KV cache wins, measure how much it changes the answers.",
     ),
+    against_ollama: bool = typer.Option(
+        True,
+        "--ollama/--no-ollama",
+        help="For a model downloaded with Ollama, run the same test in Ollama too, if it runs.",
+    ),
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
     given_prompt, given_gen = prompt_tokens, gen_tokens
@@ -771,7 +776,59 @@ def tune(
                 f"A {cache} KV cache saves memory but can make answers slightly worse than f16. "
                 f"'localtune quality {model}' measures how much."
             )
+    if against_ollama and model_name:
+        compare_with_ollama(best, model_name, prompt_tokens, gen_tokens, repetitions, electricity)
     console.print(f"All runs saved to {results_file()}")
+
+
+# After tuning a model downloaded with Ollama: the same test in Ollama itself, at its own
+# settings, since that's how most people run it (runners/web_api.py). It comes last, after
+# everything else that needs the GPU, because Ollama keeps the model loaded for a few minutes
+# afterwards. When Ollama is as fast as the tuned settings (within NOISE) or faster, the advice
+# is to keep using it: tuning can't make the model meaningfully faster on this computer. The
+# run is saved with the session's tune_id, so the comparison stays with the runs it was made
+# for.
+
+
+def compare_with_ollama(
+    best: RunResult,
+    model_name: str,
+    prompt_tokens: int,
+    gen_tokens: int,
+    repetitions: int,
+    electricity,
+) -> None:
+    server = find_server(f"http://127.0.0.1:{KNOWN_SERVERS['Ollama']}")
+    name = pick_model(server.models, model_name) if server and server.name == "Ollama" else None
+    if name is None:
+        console.print("Start Ollama to compare these settings with it next time.")
+        return
+    options = ApiOptions(
+        prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, repetitions=repetitions
+    )
+    requested = web_api_settings(server, name, options)
+    usual = usual_seconds(requested, prompt_tokens, gen_tokens, repetitions)
+    engine = partial(run_web_api, server, name, options)
+    with working(
+        console, "run", f"Running the same test in Ollama {server.version}...", None, usual
+    ):
+        result = measure(engine, requested, electricity, repetitions, gpu_index=best.gpu_index)
+    result.tune_id, result.use = best.tune_id, best.use
+    save_result(result)
+
+    ollama_s, best_s = answer_seconds(result), answer_seconds(best)
+    if ollama_s is None:
+        console.print(f"Ollama's run didn't work, so there's nothing to compare: {result.error}")
+    elif ollama_s <= best_s * (1 + NOISE):
+        console.print(
+            f"[green]Ollama is already as fast as these settings[/green] ({ollama_s:,.1f} s per "
+            f"answer, tuned {best_s:,.1f} s), so you can keep using Ollama as it is."
+        )
+    else:
+        console.print(
+            f"Tuned is {ollama_s / best_s - 1:.0%} faster than Ollama ({best_s:,.1f} s per "
+            f"answer instead of {ollama_s:,.1f} s)."
+        )
 
 
 # One tuning session: finding the GPU/RAM split a model too big for the GPU needs, then
