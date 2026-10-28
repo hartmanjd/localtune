@@ -13,7 +13,9 @@
 # comparisons use, so these numbers can be set beside published ones. It is downloaded once,
 # the first time it's needed, into localtune's folder (results.py). The text is read in long
 # chunks, because a KV cache only holds a conversation's memory: short chunks would leave
-# little in it to get wrong. Every result is saved to quality.jsonl, beside results.jsonl.
+# little in it to get wrong. CONTEXT is a chat-length chunk; a longer one, like a pasted
+# document's (uses.py), shows whether the loss grows as the conversation does. Every result is
+# saved to quality.jsonl, beside results.jsonl.
 
 import io
 import re
@@ -96,12 +98,13 @@ def build_command(
     placement: dict,
     gpu_index: int = 0,
     chunks: int = CHUNKS,
+    context: int = CONTEXT,
 ) -> list[str]:
     command = [
         llama_perplexity,
         "-m", str(model),
         "-f", str(text),
-        "-c", str(CONTEXT),
+        "-c", str(context),
         "--chunks", str(chunks),
         "-fa", "on",
         "-ctk", kv_cache,
@@ -141,6 +144,7 @@ def measure(
     base: dict,
     gpu_index: int = 0,
     chunks: int = CHUNKS,
+    context: int = CONTEXT,
 ) -> QualityResult:
     result = QualityResult(
         model_file=model.name,
@@ -148,10 +152,13 @@ def measure(
         gpu_layers=placement.get("gpu_layers"),
         cpu_moe_layers=placement.get("cpu_moe_layers"),
         chunks=chunks,
+        context_size=context,
         gpu_index=gpu_index,
         **base,
     )
-    command = build_command(llama_perplexity, model, text, kv_cache, placement, gpu_index, chunks)
+    command = build_command(
+        llama_perplexity, model, text, kv_cache, placement, gpu_index, chunks, context
+    )
     try:
         done = subprocess.run(command, capture_output=True, text=True, errors="replace")
     except OSError as error:

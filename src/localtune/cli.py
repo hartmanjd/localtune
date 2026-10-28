@@ -1307,9 +1307,10 @@ def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
 
 
 # "localtune quality": how much worse a q8_0 or q4_0 KV cache makes a model's answers than
-# f16 (quality.py), read from the same text with each. A model too big for the GPU starts from
-# tune's first guess at a GPU/RAM split, like sweep, unless one is given. Each result is saved
-# as soon as it finishes.
+# f16 (quality.py), read from the same text with each. The text is read in chunks as long as a
+# use's conversation (--use, uses.py, rounded up like llama-server's room for it), or a length
+# given with --context. A model too big for the GPU starts from tune's first guess at a GPU/RAM
+# split, like sweep, unless one is given. Each result is saved as soon as it finishes.
 
 
 @app.command()
@@ -1319,10 +1320,19 @@ def quality(
     cpu_moe: int | None = typer.Option(
         None, help="Keep the experts of this many layers in RAM (mixture-of-experts models)."
     ),
-    chunks: int = typer.Option(CHUNKS, help=f"How many {CONTEXT:,}-token pieces of text to read."),
+    use: str | None = typer.Option(
+        None,
+        help="Read the text in chunks as long as a use's conversation: chat, code or documents.",
+    ),
+    context: int | None = typer.Option(
+        None, help=f"How many tokens each chunk of text has (default {CONTEXT:,})."
+    ),
+    chunks: int = typer.Option(CHUNKS, help="How many chunks of text to read."),
     gpu: int = typer.Option(0, help="Which GPU to use."),
 ) -> None:
     """Measure how much each KV cache type changes the model's answers."""
+    if context is None:
+        context = server_context(sum(lengths_for(use, None, None))) if use else CONTEXT
     llama_perplexity = find_tool("llama-perplexity")
     if llama_perplexity is None:
         console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
@@ -1340,16 +1350,16 @@ def quality(
 
     warn_if_busy(gpu)
     given = {"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe}
-    placement = given if gpu_layers or cpu_moe else guessed_split(model_file, gpu, CONTEXT)
+    placement = given if gpu_layers or cpu_moe else guessed_split(model_file, gpu, context)
     base = {"rig_id": rig_id(), "model": model_name or model_file.stem}
     base["hardware"] = detect_hardware()
     found = []
     for number, cache in enumerate(KV_CACHES, 1):
-        label = f"Reading {chunks * CONTEXT:,} tokens of text with a {cache} KV cache"
+        label = f"Reading {chunks} chunks of {context:,} tokens with a {cache} KV cache"
         progress = (number - 1) / len(KV_CACHES)
         with working(console, "run", f"{label} ({number} of {len(KV_CACHES)})...", progress):
             result = measure_quality(
-                llama_perplexity, model_file, text, cache, placement, base, gpu, chunks
+                llama_perplexity, model_file, text, cache, placement, base, gpu, chunks, context
             )
         save_quality(result)
         found.append(result)
@@ -1359,7 +1369,10 @@ def quality(
 
 def show_quality(found: list[QualityResult]) -> None:
     f16 = next((r for r in found if r.kv_cache == "f16" and r.perplexity), None)
-    table = Table(title=f"{found[0].model}: answer quality by KV cache")
+    first = found[0]
+    table = Table(
+        title=f"{first.model}: answer quality by KV cache, {first.context_size:,}-token chunks"
+    )
     table.add_column("KV cache")
     for column in ("Perplexity", "Vs f16"):
         table.add_column(column, justify="right")
