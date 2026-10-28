@@ -49,35 +49,45 @@ def gauge(sample: GpuSample, total_gb: float) -> Text:
 
 
 def screen(sample: GpuSample, total_gb: float, programs: list[str]) -> Group:
-    lines = [gauge(sample, total_gb)]
+    lines = [gauge(sample, total_gb), Text("")]
     if programs:
-        lines.append(Text(f"  Using the GPU: {', '.join(programs)}"))
-    lines.append(
+        lines.append(Text("  Using the GPU:"))
+        lines += [Text(f"    • {program}") for program in programs]
+        lines.append(Text(""))
+    lines += [
+        Text("  For the best results, please close any programs you don't need.", style="dim"),
         Text(
-            "  For the best results, please close any programs you don't need. The benchmark "
-            f"will start once GPU usage falls below {BUSY_UTILIZATION_PCT}% and other programs "
-            f"are using less than {OTHER_VRAM_GB:.0f} GB of its memory. Press Enter to start "
-            "now.",
+            f"  The benchmark will start once GPU usage falls below {BUSY_UTILIZATION_PCT}%\n"
+            f"  and other programs are using less than {OTHER_VRAM_GB:.0f} GB of its memory.",
             style="dim",
-        )
-    )
+        ),
+        Text(""),
+        Text("  Press Enter to start now.", style="bold"),
+    ]
     return Group(*lines)
 
 
-# The programs using the GPU, as nvidia-smi lists them: each one's file name, and how much
-# memory it holds when NVIDIA knows.
+# The programs using the GPU, as nvidia-smi lists them: each one's file name and how much memory
+# it holds, biggest first. A program running several times is listed once, with its memory added
+# up. Windows often doesn't tell NVIDIA how much memory a game or browser holds; those come last
+# and say so, rather than looking like they hold none.
 
 
 def parse_programs(text: str) -> list[str]:
-    programs = []
+    memory: dict[str, float | None] = {}
     for line in text.strip().splitlines():
-        path, _, memory = line.rpartition(",")
+        path, _, used = line.rpartition(",")
         name = PureWindowsPath(path.strip()).name if path.strip() else ""
         if not name:
             continue
-        memory = memory.strip()
-        programs.append(f"{name} ({int(memory) / 1024:.1f} GB)" if memory.isdigit() else name)
-    return programs
+        used_gb = int(used.strip()) / 1024 if used.strip().isdigit() else None
+        known = [gb for gb in (memory.get(name), used_gb) if gb is not None]
+        memory[name] = sum(known) if known else None
+    biggest_first = sorted(memory.items(), key=lambda item: (item[1] is None, -(item[1] or 0)))
+    return [
+        f"{name}  {gb:.1f} GB" if gb is not None else f"{name}  (memory not reported)"
+        for name, gb in biggest_first
+    ]
 
 
 def gpu_programs(nvidia_smi: Path, gpu_index: int = 0) -> list[str]:
