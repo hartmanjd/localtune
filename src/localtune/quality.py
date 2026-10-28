@@ -193,7 +193,9 @@ def verdict(loss: float) -> str:
     return "noticeable"
 
 
-# Saving: one result per line in quality.jsonl, like results.jsonl.
+# Saving: one result per line in quality.jsonl, like results.jsonl. Reading them back lets tune
+# reuse a check this computer already made on the same model, cache type and chunk length,
+# since the answer doesn't change between runs.
 
 
 def quality_file() -> Path:
@@ -206,3 +208,26 @@ def save_quality(result: QualityResult) -> Path:
     with path.open("a", encoding="utf-8") as f:
         f.write(result.model_dump_json() + "\n")
     return path
+
+
+def load_quality() -> list[QualityResult]:
+    path = quality_file()
+    if not path.exists():
+        return []
+    found = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            found.append(QualityResult.model_validate_json(line))
+        except ValueError:
+            continue
+    return found
+
+
+def earlier(rig_id: str, model: str, kv_cache: str, context: int) -> QualityResult | None:
+    matches = [
+        r
+        for r in load_quality()
+        if (r.rig_id, r.model, r.kv_cache, r.context_size) == (rig_id, model, kv_cache, context)
+        and r.perplexity is not None
+    ]
+    return matches[-1] if matches else None
