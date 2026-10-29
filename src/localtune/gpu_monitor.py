@@ -145,7 +145,10 @@ def summarize(samples: list[GpuSample], baseline: GpuSample | None = None) -> Gp
 
 # What the GPU is already doing before a benchmark: a few quick readings of how busy it is,
 # how much memory other programs hold and how much power it draws. background.py saves them
-# with the run and warns when another program is in the way.
+# with the run and warns when another program is in the way. How busy the GPU is comes from
+# the quietest reading: right after a benchmark ends, NVIDIA still reports how busy the GPU
+# was over its last moments, so only the first reading is high, while another program keeps
+# every reading up.
 
 
 def other_use(
@@ -165,7 +168,7 @@ def other_use(
         time_s=samples[-1].time_s,
         power_w=sum(powers) / len(powers) if powers else None,
         vram_used_gb=min(s.vram_used_gb for s in samples),
-        utilization_pct=sum(s.utilization_pct for s in samples) / len(samples),
+        utilization_pct=min(s.utilization_pct for s in samples),
         temperature_c=max(s.temperature_c for s in samples),
     )
 

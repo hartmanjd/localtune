@@ -36,13 +36,22 @@ def test_failed_and_busy_runs_are_kept_but_marked(tmp_path):
     folder = tmp_path / "my-pc" / "results.jsonl"
     save_result(make_run(), folder)
     save_result(make_run(status="out_of_memory", speed=None), folder)
-    save_result(make_run(background=Background(gpu_utilization_pct=60)), folder)
+    save_result(make_run(background=Background(gpu_vram_used_gb=6.0)), folder)
+    save_result(make_run(background=Background(cpu_load_pct=80)), folder)
     save_result(make_run(gpu=gpu_summary(50).model_copy(update={"baseline_vram_gb": 5.0})), folder)
     reasons = [row["skip_reason"] for row in combine_runs.combine(tmp_path)]
     assert reasons[0] == ""
     assert reasons[1] == "out_of_memory"
-    assert reasons[2].startswith("busy: the GPU is already 60% busy")
-    assert reasons[3].startswith("busy: 5.0 GB")
+    assert reasons[2] == "busy: 6.0 GB of GPU memory in use by other programs"
+    assert reasons[3] == "busy: the CPU was 80% busy"
+    assert reasons[4] == "busy: 5.0 GB of GPU memory in use at the start"
+
+
+def test_the_end_of_the_run_before_doesnt_mark_a_run_busy(tmp_path):
+    # Saved by older versions: the GPU looked 33% busy with nothing else holding its memory.
+    background = Background(gpu_utilization_pct=33, gpu_vram_used_gb=0.0, cpu_load_pct=2)
+    save_result(make_run(background=background), tmp_path / "rtx3090" / "results.jsonl")
+    assert combine_runs.combine(tmp_path)[0]["skip_reason"] == ""
 
 
 def test_summary_counts_usable_runs_per_machine(tmp_path):
