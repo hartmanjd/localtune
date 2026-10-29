@@ -7,8 +7,8 @@
 # actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
 # benchmarks, predict.py for estimates before a model is downloaded, tune.py for the settings
-# tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs) and shows the
-# answers.
+# tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs, ollama_pull.py
+# for downloading a missing model) and shows the answers.
 
 import csv
 import sys
@@ -52,7 +52,17 @@ from localtune.install import (
 )
 from localtune.meter import gpu_programs, is_busy, wait_for_room
 from localtune.models import find_model
-from localtune.ollama_models import downloaded_models, find_ollama_model
+from localtune.ollama_models import downloaded_models, find_ollama_model, manifest_path
+from localtune.ollama_pull import (
+    PullError,
+    UnknownModel,
+    download_size,
+    find_ollama,
+    is_running,
+    ollama_url,
+    pull,
+    start_ollama,
+)
 from localtune.predict import Prediction, estimate_for, predict
 from localtune.prices import find_price
 from localtune.quality import (
@@ -605,7 +615,7 @@ def prepare_llama_cpp(model: str | None, kv_cache: str | None = None):
     if llama_bench is None:
         console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
         raise typer.Exit(1)
-    model_file, model_name = find_model_file(model)
+    model_file, model_name = find_or_download(model)
     if model_file is None:
         explain_missing_model(model)
         raise typer.Exit(1)
@@ -624,6 +634,68 @@ def find_model_file(model: str | None) -> tuple[Path | None, str | None]:
     return (ollama_file, model) if ollama_file else (None, None)
 
 
+# A model name Ollama could download but hasn't yet: localtune offers to download it right
+# there (ollama_pull.py), with Enter meaning yes, and carries on once it's in. Ollama does the
+# download, so it has to be installed; if it's only closed, it's started. Without someone at
+# the keyboard to say yes (an overnight sweep, a script), nothing is downloaded.
+
+
+def find_or_download(model: str | None) -> tuple[Path | None, str | None]:
+    found = find_model_file(model)
+    if found[0] is None and model is not None and offer_ollama_download(model):
+        return find_model_file(model)
+    return found
+
+
+def offer_ollama_download(model: str, url: str | None = None) -> bool:
+    if model.lower().endswith(".gguf") or manifest_path(model) is None or not can_ask():
+        return False
+    url = url or ollama_url()
+    program = find_ollama()
+    if program is None and not is_running(url):
+        console.print(
+            f"{model} isn't downloaded, and Ollama, which downloads models, isn't installed. "
+            "Install it from https://ollama.com/download, then run this again."
+        )
+        raise typer.Exit(1)
+    try:
+        size = download_size(model)
+    except UnknownModel as error:
+        console.print(f"{error} Check the name on https://ollama.com/library.")
+        raise typer.Exit(1) from error
+    about = f" ({size / 1e9:.1f} GB)" if size else ""
+    if not typer.confirm(f"{model} isn't downloaded yet. Download it now{about}?", default=True):
+        return False
+    if not is_running(url):
+        with console.status("Starting Ollama..."):
+            started = program is not None and start_ollama(program, url)
+        if not started:
+            console.print("Ollama didn't start. Open the Ollama app, then run this again.")
+            raise typer.Exit(1)
+
+    columns = (
+        TextColumn("{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+    )
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task(f"Downloading {model}", total=size or None)
+
+        def update(status: str, done: int, total: int) -> None:
+            what = f"Downloading {model}" if status == "Downloading" else status.capitalize()
+            progress.update(task, description=what, completed=done, total=max(total, size or 0))
+
+        try:
+            pull(model, url, update)
+        except PullError as error:
+            console.print(f"Downloading {model} failed: {error}")
+            raise typer.Exit(1) from error
+    console.print(f"Downloaded {model}.")
+    return True
+
+
 def explain_missing_model(model: str | None) -> None:
     if model is None:
         console.print(
@@ -639,6 +711,7 @@ def explain_missing_model(model: str | None) -> None:
 
 # For "-b api": finds the running server and the model in it to benchmark, or says what's
 # missing. When the server has several models and none was named, it lists them to choose from.
+# A model Ollama doesn't have yet is offered for download, like for llama.cpp.
 
 
 def choose_server_and_model(url: str | None, wanted: str | None):
@@ -651,6 +724,10 @@ def choose_server_and_model(url: str | None, wanted: str | None):
         )
         raise typer.Exit(1)
     model = pick_model(server.models, wanted)
+    if model is None and wanted and server.name == "Ollama":
+        if offer_ollama_download(wanted, server.url):
+            server = find_server(server.url) or server
+            model = pick_model(server.models, wanted)
     if model is None:
         if wanted:
             console.print(f"{server.name} doesn't have a model called {wanted}.")
@@ -1258,6 +1335,8 @@ def sweep(
         console.print("No models to benchmark. Name some, or download one with Ollama first, like:")
         console.print("  ollama pull qwen3:8b", markup=False, highlight=False)
         raise typer.Exit(1)
+    for model in models:
+        find_or_download(model)
 
     warn_if_busy(gpu)
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
@@ -1503,7 +1582,7 @@ def quality(
     if find_tool("llama-perplexity") is None:
         console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
         raise typer.Exit(1)
-    model_file, model_name = find_model_file(model)
+    model_file, model_name = find_or_download(model)
     if model_file is None:
         explain_missing_model(model)
         raise typer.Exit(1)

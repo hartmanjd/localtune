@@ -326,6 +326,93 @@ def test_run_with_an_unknown_model(monkeypatch, tmp_path):
     assert "ollama pull qwen3:8b" in result.output
 
 
+# A missing Ollama model is offered for download. The download is pretend: "pulled" makes the
+# model appear the way a real download would, and Ollama is treated as installed and running.
+
+
+def missing_until_pulled(monkeypatch, tmp_path, running=True, installed=True):
+    pulled = []
+    model_file = tmp_path / "sha256-abc"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(cli, "can_ask", lambda: True)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: model_file if pulled else None)
+    monkeypatch.setattr(cli, "find_ollama", lambda: "ollama" if installed else None)
+    monkeypatch.setattr(cli, "is_running", lambda url: running)
+    monkeypatch.setattr(cli, "download_size", lambda name: 9_300_000_000)
+
+    def fake_pull(name, url, progress):
+        progress("Downloading", 9_300_000_000, 9_300_000_000)
+        pulled.append(name)
+
+    monkeypatch.setattr(cli, "pull", fake_pull)
+    return pulled
+
+
+def test_run_downloads_a_missing_model_when_enter_is_pressed(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    pulled = missing_until_pulled(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"], input="\n")
+    assert "qwen3:14b isn't downloaded yet. Download it now (9.3 GB)?" in result.output
+    assert pulled == ["qwen3:14b"]
+    assert result.exit_code == 0
+    assert load_results()[0].settings.model == "qwen3:14b"
+
+
+def test_run_stops_when_the_download_is_declined(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    pulled = missing_until_pulled(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="n\n")
+    assert pulled == []
+    assert result.exit_code == 1
+    assert "ollama pull qwen3:14b" in result.output
+
+
+def test_run_starts_ollama_before_downloading(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    pulled = missing_until_pulled(monkeypatch, tmp_path, running=False)
+    started = []
+    monkeypatch.setattr(cli, "start_ollama", lambda program, url: started.append(url) or True)
+    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"], input="\n")
+    assert started and pulled == ["qwen3:14b"]
+    assert result.exit_code == 0
+
+
+def test_run_explains_when_ollama_isnt_installed(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    pulled = missing_until_pulled(monkeypatch, tmp_path, running=False, installed=False)
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="\n")
+    assert "https://ollama.com/download" in result.output
+    assert "Download it now" not in result.output
+    assert pulled == [] and result.exit_code == 1
+
+
+def test_run_catches_a_misspelled_model_before_asking(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    missing_until_pulled(monkeypatch, tmp_path)
+
+    def unknown(name):
+        raise cli.UnknownModel(f"Ollama has no model called {name}.")
+
+    monkeypatch.setattr(cli, "download_size", unknown)
+    result = runner.invoke(cli.app, ["run", "qwen9:14b"], input="\n")
+    assert "Ollama has no model called qwen9:14b." in result.output
+    assert "Download it now" not in result.output
+    assert result.exit_code == 1
+
+
+def test_run_explains_a_failed_download(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    missing_until_pulled(monkeypatch, tmp_path)
+
+    def broken(name, url, progress):
+        raise cli.PullError("no space left on device")
+
+    monkeypatch.setattr(cli, "pull", broken)
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="\n")
+    assert "Downloading qwen3:14b failed: no space left on device" in result.output
+    assert result.exit_code == 1
+
+
 def test_run_with_a_missing_model_file(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     result = runner.invoke(cli.app, ["run", "missing.gguf"])
