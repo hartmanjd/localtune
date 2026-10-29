@@ -29,3 +29,6 @@ models/
 
 # Raw downloads used to build the price tables
 raw-price-data/
+
+# The combined dataset, rebuilt from data/runs/ by scripts/combine_runs.py
+data/all_runs.csv
