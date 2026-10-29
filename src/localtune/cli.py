@@ -42,7 +42,7 @@ from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_check
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
-from localtune.hardware import GpuInfo, detect_hardware, find_nvidia_smi
+from localtune.hardware import GpuInfo, HardwareInfo, detect_hardware, find_nvidia_smi
 from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
@@ -74,6 +74,7 @@ from localtune.results import (
     RunSettings,
     flat_record,
     load_results,
+    model_facts,
     results_file,
     rig_id,
     save_result,
@@ -96,6 +97,7 @@ from localtune.share import (
     share_url,
     write_preview,
 )
+from localtune.speed_model import planned_run, trained_estimate
 from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
@@ -209,7 +211,9 @@ def info() -> None:
 
 # "localtune predict": estimates whether a model fits on this computer's GPU (or one named with
 # --gpu-name) and how fast it will write, from the model and GPU tables alone (predict.py), so
-# it works before the model is downloaded. It ends with how to measure the real speed.
+# it works before the model is downloaded. When the trained prediction model is on this
+# computer (speed_model.py), its guess is shown beside the formula's. It ends with how to
+# measure the real speed.
 
 
 @app.command("predict")
@@ -234,12 +238,20 @@ def predict_command(
         )
         raise typer.Exit(1)
 
-    ram_gb = None
     if gpu_name:
         spec = find_gpu_spec(gpu_name)
         if spec is None:
             console.print(f"{gpu_name} isn't in localtune's GPU table.", markup=False)
             raise typer.Exit(1)
+        hw = HardwareInfo(
+            os="",
+            is_wsl=False,
+            cpu_name=None,
+            cpu_threads=None,
+            ram_gb=None,
+            gpus=[GpuInfo(index=0, name=spec.name, vram_gb=spec.vram_gb, driver_version="")],
+        )
+        gpu = 0
     else:
         hw = detect_hardware()
         if gpu >= len(hw.gpus):
@@ -251,12 +263,16 @@ def predict_command(
         if spec is None:
             console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
             raise typer.Exit(1)
-        ram_gb = hw.ram_gb
 
-    show_prediction(predict(*found, spec, prompt_tokens + gen_tokens, ram_gb), use)
+    p = predict(*found, spec, prompt_tokens + gen_tokens, hw.ram_gb)
+    trained = None
+    facts = model_facts(model)
+    if p.decode_tok_s is not None and facts is not None:
+        trained = trained_estimate(planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens))
+    show_prediction(p, use, trained)
 
 
-def show_prediction(p: Prediction, use: str | None) -> None:
+def show_prediction(p: Prediction, use: str | None, trained: float | None = None) -> None:
     table = Table(title=f"Estimate for {p.model} on {p.gpu}", show_header=False)
     table.add_row("Model file", f"{p.file_gb:.1f} GB ({p.quant})")
     table.add_row(f"Conversation ({use or 'short chat'})", f"{p.conversation_gb:.1f} GB")
@@ -272,6 +288,8 @@ def show_prediction(p: Prediction, use: str | None) -> None:
     table.add_row("Fits on the GPU", fits)
     if p.decode_tok_s is not None:
         table.add_row("Writing speed", f"about {p.decode_tok_s:,.0f} tok/s (estimate)")
+    if trained is not None:
+        table.add_row("Trained model", f"about {trained:,.0f} tok/s")
     console.print(table)
     if p.decode_tok_s is None:
         return
