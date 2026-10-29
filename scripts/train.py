@@ -2,6 +2,7 @@
 
 Run from the project folder, after scripts/combine_runs.py:
     uv run --group train python scripts/train.py
+Add --save to also keep a model trained on every run, for 'localtune predict' on this computer.
 """
 
 # The formula in 'localtune predict' already gets the rough size of a model's writing speed
@@ -18,6 +19,7 @@ Run from the project folder, after scripts/combine_runs.py:
 
 import math
 import sys
+from pathlib import Path
 
 import numpy as np
 from evaluate import (
@@ -35,6 +37,7 @@ from evaluate import (
 from rich.table import Table
 
 from localtune.features import FEATURES, inputs
+from localtune.speed_model import model_file
 
 # The inputs the model sees for each run are worked out in features.py, so that training and
 # 'localtune predict' build them the same way.
@@ -95,6 +98,18 @@ def importance(rows: list[dict], top: int = 10) -> list[tuple[str, float]]:
     return sorted(((name, v / total) for name, v in gains.items()), key=lambda x: -x[1])[:top]
 
 
+# The model 'localtune predict' uses on this computer (speed_model.py): trained on every usable
+# run, saved in localtune's own folder rather than the project, so it stays off GitHub. Saving
+# again replaces it with one trained on the runs there are now.
+
+
+def save(rows: list[dict], path: Path | None = None) -> Path:
+    path = path or model_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fit(rows).save_model(str(path))
+    return path
+
+
 def main() -> None:
     if not RUNS_FILE.exists():
         console.print(
@@ -114,17 +129,19 @@ def main() -> None:
         table.add_row(*line)
     console.print(table)
 
-    inputs = Table(title="What the model leaned on most, trained on every run")
-    inputs.add_column("Input")
-    inputs.add_column("Share", justify="right")
+    leaned = Table(title="What the model leaned on most, trained on every run")
+    leaned.add_column("Input")
+    leaned.add_column("Share", justify="right")
     for name, share in importance(rows):
-        inputs.add_row(name, f"{share:.0%}")
-    console.print(inputs)
+        leaned.add_row(name, f"{share:.0%}")
+    console.print(leaned)
     gpus = len({row[GPU] for row in rows})
     console.print(
         f"Trained on {len(rows)} runs from {gpus} GPUs. With few GPUs, the inputs that describe "
         "the GPU barely vary, so the model can't learn much about how GPUs differ yet."
     )
+    if "--save" in sys.argv[1:]:
+        console.print(f"Saved the model trained on every run to {save(rows)}", markup=False)
 
 
 if __name__ == "__main__":
