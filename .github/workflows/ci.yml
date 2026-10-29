@@ -21,8 +21,9 @@ jobs:
         python-version: ["3.10", "3.13"]
 
     # The same steps a person would do: get the code, install it with the exact tool versions
-    # from uv.lock, then run the same checks you can run locally (ruff for mistakes and
-    # formatting, pytest for the tests in tests/).
+    # from uv.lock (with the optional "train" tools, so the prediction model's tests run too),
+    # then run the same checks you can run locally (ruff for mistakes and formatting, pytest for
+    # the tests in tests/).
     steps:
       - uses: actions/checkout@v5
 
@@ -32,7 +33,7 @@ jobs:
           activate-environment: true
 
       - name: Install
-        run: uv sync --locked
+        run: uv sync --locked --group train
 
       - name: Lint
         run: uv run ruff check
