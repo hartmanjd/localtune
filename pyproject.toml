@@ -36,12 +36,18 @@ path = "src/localtune/__init__.py"
 
 # Tools for people working on localtune, not for people using it: pytest runs the tests in
 # tests/, and ruff keeps the code free of common mistakes and consistently formatted.
-# The same checks run automatically on GitHub (see .github/workflows/ci.yml).
+# The same checks run automatically on GitHub (see .github/workflows/ci.yml). The train group
+# is only for training the prediction model (scripts/train.py): XGBoost and numpy are large,
+# so they stay out of the normal install. The CPU-only XGBoost is enough for a few thousand runs.
 [dependency-groups]
 dev = [
     "openpyxl>=3.1.5",
     "pytest>=9.1.1",
     "ruff>=0.17.2",
+]
+train = [
+    "numpy>=2.2.6",
+    "xgboost-cpu>=3.2.0",
 ]
 
 [tool.pytest.ini_options]
