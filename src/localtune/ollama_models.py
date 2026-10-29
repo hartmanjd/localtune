@@ -25,10 +25,11 @@ def models_dir() -> Path:
 
 
 # A name like qwen3:14b is short for registry.ollama.ai/library/qwen3:14b, and a name with no
-# tag means the "latest" tag; the manifest sits in a folder per part of that full name.
+# tag means the "latest" tag; the manifest sits in a folder per part of that full name, and
+# downloading (ollama_pull.py) asks the registry for the model by the same parts.
 
 
-def manifest_path(name: str) -> Path | None:
+def full_name(name: str) -> list[str] | None:
     model, _, tag = name.partition(":")
     parts = model.split("/")
     if not model or "/" in tag or any(part in ("", ".", "..") for part in parts):
@@ -37,7 +38,12 @@ def manifest_path(name: str) -> Path | None:
         parts = [DEFAULT_REGISTRY, DEFAULT_NAMESPACE, *parts]
     elif len(parts) == 2:
         parts = [DEFAULT_REGISTRY, *parts]
-    return models_dir().joinpath("manifests", *parts, tag or "latest")
+    return [*parts, tag or "latest"]
+
+
+def manifest_path(name: str) -> Path | None:
+    parts = full_name(name)
+    return None if parts is None else models_dir().joinpath("manifests", *parts)
 
 
 def find_ollama_model(name: str) -> Path | None:
