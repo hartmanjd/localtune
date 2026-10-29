@@ -122,7 +122,11 @@ def main() -> None:
     if not rows:
         print(f"No runs found. Put each machine's results.jsonl in its own folder in {RUNS_DIR}")
         sys.exit(1)
-    save(rows)
+    try:
+        save(rows)
+    except PermissionError:
+        print(f"Can't write {OUT_FILE}. If it's open in Excel, close it and run this again.")
+        sys.exit(1)
     for line in summary(rows):
         print(line)
     print(f"Saved {len(rows)} runs to {OUT_FILE}")
