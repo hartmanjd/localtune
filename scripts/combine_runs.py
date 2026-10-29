@@ -17,7 +17,7 @@ from pathlib import Path
 
 from localtune.background import BUSY_CPU_PCT, OTHER_VRAM_GB
 from localtune.predict import estimate_for
-from localtune.results import RunResult, flat_record, load_results
+from localtune.results import RunResult, flat_record, gpu_facts, load_results, model_facts
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = ROOT / "data" / "runs"
@@ -46,6 +46,29 @@ def skip_reason(run: RunResult) -> str:
     return ""
 
 
+# Runs saved before localtune kept the model and GPU facts with each run (results.py) are missing
+# them, so they would have no estimate and couldn't be used for training. Those facts come from
+# localtune's own tables and don't change, so they are filled in from the tables now, the same
+# way a new run gets them. A model is only filled in when the table's file for its name is the
+# quantization the run used, since another file would have a different size; models the
+# tables don't know (like a run of a downloaded file by its file name) stay empty. The
+# facts_filled column says which runs got them this way.
+
+
+def fill_facts(run: RunResult) -> tuple[RunResult, bool]:
+    changes = {}
+    if run.model_facts is None:
+        facts = model_facts(run.settings.model)
+        quant = run.settings.quant
+        if facts and (not quant or facts.quant.lower() == quant.lower()):
+            changes["model_facts"] = facts
+    if run.gpu_facts is None:
+        spec = gpu_facts(run.hardware, run.gpu_index)
+        if spec:
+            changes["gpu_facts"] = spec
+    return run.model_copy(update=changes), bool(changes)
+
+
 # Reading every machine's file. The same file copied into two folders, or copied again after
 # more runs were added, would repeat runs, so each run_id is only kept the first time.
 
@@ -57,10 +80,15 @@ def combine(runs_dir: Path = RUNS_DIR) -> list[dict]:
             if run.run_id in seen:
                 continue
             seen.add(run.run_id)
+            run, filled = fill_facts(run)
             rows.append(
                 {"machine": path.parent.name}
                 | flat_record(run)
-                | {"estimate.decode_tok_s": estimate_for(run), "skip_reason": skip_reason(run)}
+                | {
+                    "estimate.decode_tok_s": estimate_for(run),
+                    "facts_filled": filled,
+                    "skip_reason": skip_reason(run),
+                }
             )
     return rows
 

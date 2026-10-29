@@ -6,9 +6,10 @@ import csv
 import importlib.util
 from pathlib import Path
 
-from test_results import gpu_summary, make_run
+from test_results import HARDWARE, SETTINGS, gpu_summary, make_run
 
 from localtune.background import Background
+from localtune.hardware import GpuInfo
 from localtune.results import save_result
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "combine_runs.py"
@@ -71,3 +72,42 @@ def test_saved_table_has_every_column(tmp_path):
     assert row["machine"] == "my-pc"
     assert row["skip_reason"] == ""
     assert "settings.kv_cache_k" in row
+
+
+# Runs saved before localtune kept the model and GPU facts: a qwen3:14b run on an RTX 3090,
+# both in localtune's tables.
+OLD_HARDWARE = HARDWARE.model_copy(
+    update={
+        "gpus": [
+            GpuInfo(index=0, name="NVIDIA GeForce RTX 3090", vram_gb=24.0, driver_version="580.00")
+        ]
+    }
+)
+
+
+def old_run(model="qwen3:14b", quant="Q4_K_M"):
+    settings = SETTINGS.model_copy(update={"model": model, "quant": quant})
+    return make_run(settings=settings, hardware=OLD_HARDWARE)
+
+
+def test_missing_facts_are_filled_in_from_the_tables(tmp_path):
+    save_result(old_run(), tmp_path / "my-pc" / "results.jsonl")
+    row = combine_runs.combine(tmp_path)[0]
+    assert row["facts_filled"] is True
+    assert row["model_facts.file_bytes"] == 9276184896
+    assert row["gpu_facts.memory_bandwidth_gbs"] == 936.0
+    assert row["estimate.decode_tok_s"] is not None
+
+
+def test_a_model_is_only_filled_in_for_the_quantization_it_used(tmp_path):
+    save_result(old_run(quant="Q8_0"), tmp_path / "my-pc" / "results.jsonl")
+    row = combine_runs.combine(tmp_path)[0]
+    assert row["model_facts"] is None
+    assert row["gpu_facts.name"] == "RTX 3090"
+
+
+def test_a_model_the_tables_dont_know_stays_empty(tmp_path):
+    save_result(old_run(model="my-own-model.gguf"), tmp_path / "my-pc" / "results.jsonl")
+    row = combine_runs.combine(tmp_path)[0]
+    assert row["model_facts"] is None
+    assert row["estimate.decode_tok_s"] is None
