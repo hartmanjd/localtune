@@ -93,9 +93,18 @@ def test_monitor_without_a_gpu():
     assert monitor.summary() is None
 
 
-def test_other_use_averages_a_few_quick_readings():
+def test_other_use_takes_a_few_quick_readings():
     readings = iter([sample(0, 20.0, 3.0, 10), sample(1, 30.0, 2.5, 30), None])
     seen = gpu_monitor.other_use(lambda: next(readings), readings=3, interval_s=0)
     assert seen.vram_used_gb == 2.5
-    assert seen.utilization_pct == 20
+    assert seen.utilization_pct == 10
     assert seen.power_w == 25
+
+
+def test_the_end_of_the_last_benchmark_doesnt_count_as_busy():
+    # Right after a run, only the first reading still shows it; the GPU is idle after that.
+    readings = iter(
+        [sample(0, 300.0, 0.0, 100), sample(1, 270.0, 0.0, 0), sample(2, 250.0, 0.0, 0)]
+    )
+    seen = gpu_monitor.other_use(lambda: next(readings), readings=3, interval_s=0)
+    assert seen.utilization_pct == 0
