@@ -34,85 +34,14 @@ from evaluate import (
 )
 from rich.table import Table
 
-# The inputs the model may see: only what is known before a run starts, about the settings,
-# the computer, the GPU's spec sheet and the model. Nothing measured during the run (power,
-# clock speeds, how busy the GPU was) is in here: those are only known afterwards, so a model
-# that used them would look brilliant in testing and fail for anyone asking about a new GPU.
-# Each one is a column of the combined table, used as a number.
+from localtune.features import FEATURES, inputs
 
-NUMBER_COLUMNS = [
-    "settings.context_size",
-    "settings.cpu_moe_layers",
-    "settings.threads",
-    "settings.ubatch_size",
-    "hardware.cpu_threads",
-    "hardware.ram_gb",
-    "hardware.gpu.vram_gb",
-    "hardware.gpu.power_limit_w",
-    "hardware.gpu.max_sm_clock_mhz",
-    "hardware.gpu.max_memory_clock_mhz",
-    "hardware.gpu.pcie_gen",
-    "hardware.gpu.pcie_lanes",
-    "gpu_facts.memory_bandwidth_gbs",
-    "gpu_facts.fp32_tflops",
-    "gpu_facts.compute_capability",
-    "gpu_facts.board_power_w",
-    "model_facts.params",
-    "model_facts.active_params",
-    "model_facts.layers",
-    "model_facts.kv_heads",
-    "model_facts.head_dim",
-    "model_facts.experts",
-    "model_facts.experts_used",
-    "model_facts.file_bytes",
-    "estimate.decode_tok_s",
-]
-
-# A few inputs are worked out from columns, because the column alone means little: the share of
-# the model's layers on the GPU (-1 means all of them), how much smaller the KV cache is than
-# full size (tune.py), how compressed the model file is in bits per number, how deep into the
-# conversation writing was measured, whether the GPU runs under its usual power, and which
-# engine and operating system ran it.
-
-KV_CACHE_SIZE = {"f16": 1.0, "q8_0": 34 / 64, "q4_0": 18 / 64}
-
-
-def number(row: dict, column: str) -> float:
-    value = row.get(column)
-    if value in (None, "", "None"):
-        return math.nan
-    if value in ("True", "False"):
-        return float(value == "True")
-    return float(value)
-
-
-def worked_out(row: dict) -> dict[str, float]:
-    layers = number(row, "model_facts.layers")
-    on_gpu = number(row, "settings.gpu_layers")
-    params = number(row, "model_facts.params")
-    power = number(row, "hardware.gpu.power_limit_w")
-    usual = number(row, "hardware.gpu.default_power_limit_w")
-    return {
-        "share of layers on GPU": 1.0 if math.isnan(on_gpu) or on_gpu < 0 else on_gpu / layers,
-        "KV cache size": KV_CACHE_SIZE.get(row.get("settings.kv_cache_k") or "f16", math.nan),
-        "flash attention": number(row, "settings.flash_attention"),
-        "bits per number": number(row, "model_facts.file_bytes") * 8 / params,
-        "decode depth": 0.0
-        if row.get("settings.decode_depth") in (None, "")
-        else number(row, "settings.decode_depth"),
-        "power vs usual": power / usual,
-        "Ollama": float(row.get("settings.engine") != "llama.cpp"),
-        "Windows": float((row.get("hardware.os") or "").startswith("Windows")),
-    }
-
-
-FEATURES = NUMBER_COLUMNS + list(worked_out({}))
+# The inputs the model sees for each run are worked out in features.py, so that training and
+# 'localtune predict' build them the same way.
 
 
 def features(rows: list[dict]) -> np.ndarray:
-    return np.array(
-        [[number(row, c) for c in NUMBER_COLUMNS] + list(worked_out(row).values()) for row in rows]
-    )
+    return np.array([inputs(row) for row in rows])
 
 
 # What the model learns for each run: how many times faster or slower than the formula it was,

@@ -1,8 +1,7 @@
-# Tests for scripts/train.py. They use made-up rows of the combined table: the inputs the
-# model sees, worked out by hand, and a small made-up dataset where speed follows one setting,
-# so a model that learned anything has to beat the formula on it.
+# Tests for scripts/train.py. They use made-up rows of the combined table: a small made-up
+# dataset where speed follows one setting, so a model that learned anything has to beat the
+# formula on it.
 
-import math
 import sys
 from pathlib import Path
 
@@ -19,40 +18,6 @@ def row(gpu="RTX 3090", measured=100, estimate=80, **columns):
         "estimate.decode_tok_s": str(estimate),
         "skip_reason": "",
     } | {key: str(value) for key, value in columns.items()}
-
-
-def test_inputs_are_worked_out_from_the_columns():
-    inputs = train.worked_out(
-        row(
-            **{
-                "model_facts.layers": 40,
-                "settings.gpu_layers": 30,
-                "settings.kv_cache_k": "q8_0",
-                "settings.flash_attention": True,
-                "model_facts.params": 1000,
-                "model_facts.file_bytes": 500,
-                "hardware.gpu.power_limit_w": 280,
-                "hardware.gpu.default_power_limit_w": 350,
-                "settings.engine": "llama.cpp",
-                "hardware.os": "Windows 11",
-            }
-        )
-    )
-    assert inputs["share of layers on GPU"] == 0.75
-    assert inputs["KV cache size"] == 34 / 64
-    assert inputs["flash attention"] == 1.0
-    assert inputs["bits per number"] == 4.0
-    assert inputs["decode depth"] == 0.0
-    assert inputs["power vs usual"] == 0.8
-    assert inputs["Ollama"] == 0.0
-    assert inputs["Windows"] == 1.0
-
-
-def test_all_layers_on_gpu_and_missing_columns():
-    inputs = train.worked_out(row(**{"settings.gpu_layers": -1}))
-    assert inputs["share of layers on GPU"] == 1.0
-    assert inputs["KV cache size"] == 1.0
-    assert math.isnan(inputs["bits per number"])
 
 
 def test_every_run_gets_one_value_per_input():
