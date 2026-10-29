@@ -15,7 +15,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from localtune.background import OTHER_VRAM_GB, busy_reasons
+from localtune.background import BUSY_CPU_PCT, OTHER_VRAM_GB
 from localtune.predict import estimate_for
 from localtune.results import RunResult, flat_record, load_results
 
@@ -27,15 +27,20 @@ OUT_FILE = ROOT / "data" / "all_runs.csv"
 # Which runs can be trusted for training. Every run is kept in the table, but a run that failed,
 # or that shared the computer with another program, gets a reason in the skip_reason column, so
 # training can leave it out while the table still shows what was measured. Failed runs still
-# matter later: they show where a model stops fitting.
+# matter later: they show where a model stops fitting. Another program on the GPU is judged by
+# the memory it holds, not by how busy the GPU looked: runs saved before localtune took the
+# quietest of its readings often caught the end of the run before them, and any program using
+# the GPU holds some of its memory.
 
 
 def skip_reason(run: RunResult) -> str:
     if run.status != "ok":
         return run.status
-    busy = busy_reasons(run.background)
-    if busy:
-        return "busy: " + "; ".join(busy)
+    b = run.background
+    if b and b.gpu_vram_used_gb is not None and b.gpu_vram_used_gb >= OTHER_VRAM_GB:
+        return f"busy: {b.gpu_vram_used_gb:.1f} GB of GPU memory in use by other programs"
+    if b and b.cpu_load_pct is not None and b.cpu_load_pct >= BUSY_CPU_PCT:
+        return f"busy: the CPU was {b.cpu_load_pct:.0f}% busy"
     if run.gpu and run.gpu.baseline_vram_gb >= OTHER_VRAM_GB:
         return f"busy: {run.gpu.baseline_vram_gb:.1f} GB of GPU memory in use at the start"
     return ""
