@@ -729,7 +729,7 @@ def record_loaders(monkeypatch) -> list[tuple[str, float | None, float | None]]:
     shown = []
 
     @contextmanager
-    def working(console, scene, label, progress=None, left_s=None):
+    def working(console, scene, label, progress=None, left_s=None, after_s=None):
         shown.append((label, progress, left_s))
         yield
 
@@ -928,9 +928,33 @@ def test_tune_without_llama_cpp(monkeypatch, tmp_path):
 
 def test_tune_says_how_long_is_left():
     assert cli.seconds_left(60, 2, 16) == 420
-    assert cli.time_left(0, 0, 16) == ""
-    assert cli.time_left(60, 2, 16) == " (about 7 min left)"
-    assert cli.time_left(10, 15, 16) == " (under a minute left)"
+    assert cli.seconds_left(0, 0, 16) is None
+
+
+def test_a_sweep_learns_how_long_its_sessions_take():
+    # Guessed 100 s, 100 s, 1,000 s (a model spilling into RAM) and one the tables don't know.
+    clock = cli.SweepClock([100, 100, 1000, None])
+    assert clock.session(1) is None and clock.after(0) is None
+    clock.took.append(200)  # this computer took twice the guess
+    assert clock.session(1) == 200
+    assert clock.session(2) == 2000
+    assert clock.session(3) == 200  # the average of the finished sessions
+    assert clock.after(0) == 200 + 2000 + 200
+
+
+def test_a_session_that_spills_into_ram_is_guessed_longer(tmp_path):
+    pc = FAKE_PC.model_copy(
+        update={"gpus": [FAKE_PC.gpus[0].model_copy(update={"name": "RTX 3060", "vram_gb": 12})]}
+    )
+    model = tmp_path / "model.gguf"
+
+    def guess(name, use):
+        return cli.session_guess(model, name, *cli.USES[use], 3, pc, 0)
+
+    fits, spills = guess("qwen3:14b", "documents"), guess("qwen3:14b-q8_0", "documents")
+    assert spills > 3 * fits
+    assert guess("qwen3:14b", "chat") < fits
+    assert guess("not-a-model:7b", "chat") is None
 
 
 def test_paths_with_spaces_are_quoted_for_pasting(monkeypatch):
@@ -1072,7 +1096,8 @@ def test_sweep_can_tune_every_model_for_every_use(monkeypatch, tmp_path):
     )
     assert result.exit_code == 0
     assert "Tuning 1 model for chat, code: 2 tuning sessions" in result.output
-    assert "Session 2 of 2" in result.output
+    assert "Session 1 of 2: " + str(model) + ", chat\n" in result.output
+    assert "Session 2 of 2" in result.output and "left in all)" in result.output
     assert "Fastest settings for each model and use" in result.output
     assert "flash attn on, KV q8_0, micro-batch 2048" in result.output
     assert "+15%" in result.output
