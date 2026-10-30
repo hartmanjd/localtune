@@ -34,7 +34,7 @@ from rich.progress import (
 from rich.table import Table
 
 from localtune import __version__
-from localtune.animations import left_words, play_logo, working
+from localtune.animations import left_words, play_logo, span_words, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
@@ -83,6 +83,7 @@ from localtune.results import (
     RunResult,
     RunSettings,
     flat_record,
+    gpu_facts,
     load_results,
     model_facts,
     results_file,
@@ -954,7 +955,9 @@ def compare_with_ollama(
 # soon as it finishes, with the session's tune_id (and the sweep's sweep_id), and lands in the
 # session as it goes, so whatever finished is kept when Ctrl+C stops it. It also knows how many
 # layers the model has, so a split can say "40 of 65 layers on the GPU" (llama.cpp counts the
-# output layer as one more, so 66 of them means the whole model).
+# output layer as one more, so 66 of them means the whole model). Inside a sweep it also carries
+# the sweep's guess of how long it takes (estimate_s, used until its first run is done) and how
+# long the sessions after it should take (after_s), so its countdown can show the whole sweep too.
 
 
 @dataclass
@@ -966,6 +969,8 @@ class TuneSession:
     layers: int | None = None
     benched: int = 0
     expected: int = 0
+    estimate_s: float | None = None
+    after_s: float | None = None
 
     def placement_of(self, run: RunResult) -> dict:
         return self.placements.get(run.settings.kv_cache_k) or self.given
@@ -1016,8 +1021,11 @@ def tune_model(
         engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
         requested = requested_settings(model_file, options, model_name)
         done, expected = session.benched, max(session.expected, session.benched + 1)
-        left = seconds_left(time.monotonic() - started, done, expected)
-        with working(console, "tune", label, done / expected, left):
+        elapsed = time.monotonic() - started
+        left = seconds_left(elapsed, done, expected)
+        if left is None and session.estimate_s is not None:
+            left = max(0.0, session.estimate_s - elapsed)
+        with working(console, "tune", label, done / expected, left, session.after_s):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
         session.benched += 1
         result.tune_id, result.sweep_id, result.use = tune_id, sweep_id, use
@@ -1152,11 +1160,6 @@ def find_splits(
 
 def seconds_left(elapsed_s: float, done: int, total: int) -> float | None:
     return elapsed_s / done * (total - done) if done else None
-
-
-def time_left(elapsed_s: float, done: int, total: int) -> str:
-    left = seconds_left(elapsed_s, done, total)
-    return f" ({left_words(left)})" if left is not None else ""
 
 
 def outcome(result: RunResult) -> str:
@@ -1422,56 +1425,142 @@ def last_sweep(tuned: bool) -> tuple[str, set[tuple[str, str]]] | None:
 
 # "localtune sweep --tune": a whole tuning session (tune_model) for every model and use, one
 # after another, which can take all night. It ends with one table of what was fastest for each,
-# and how much that beat llama.cpp's usual settings.
+# and how much that beat llama.cpp's usual settings. Before each session it says how long that
+# session and the whole sweep should take (SweepClock, below).
 
 
 def tune_sweep(
     models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished=frozenset()
 ) -> None:
-    planned = max(1, len(models) * len(lengths) - len(finished))
+    plan = []
+    for model in models:
+        model_file, model_name = find_model_file(model)
+        if model_file is None:
+            console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
+            continue
+        for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+            if (model_name or model_file.stem, use_name) not in finished:
+                plan.append((model, model_file, model_name, use_name, prompt_tokens, gen_tokens))
+    planned = len(plan)
     console.print(
         f"Tuning {len(models)} model{'s' if len(models) > 1 else ''} for {', '.join(lengths)}: "
-        f"{planned} tuning session{'s' if planned > 1 else ''} of about 13 to 16 runs each, one "
+        f"{planned} tuning session{'' if planned == 1 else 's'} of about 13 to 16 runs each, one "
         "at a time. This can take hours. Ctrl+C stops it and keeps the finished runs."
     )
+    hardware = detect_hardware()
+    clock = SweepClock(
+        [
+            session_guess(model_file, model_name, prompt, gen, repetitions, hardware, gpu)
+            for _, model_file, model_name, _, prompt, gen in plan
+        ]
+    )
     sessions: list[tuple[str, str, TuneSession]] = []
-    started, done = time.monotonic(), 0
     try:
-        for model in models:
-            model_file, model_name = find_model_file(model)
-            if model_file is None:
-                console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
-                done += len(lengths)
-                continue
-            for use_name, (prompt_tokens, gen_tokens) in lengths.items():
-                if (model_name or model_file.stem, use_name) in finished:
-                    continue
-                left = time_left(time.monotonic() - started, done, planned)
-                console.print(f"\nSession {done + 1} of {planned}: {model}, {use_name}{left}")
-                session = TuneSession(given={"gpu_layers": None, "cpu_moe_layers": None})
-                sessions.append((model, use_name, session))
-                try:
-                    tune_model(
-                        session,
-                        llama_bench,
-                        model_file,
-                        model_name,
-                        prompt_tokens,
-                        gen_tokens,
-                        repetitions,
-                        electricity,
-                        gpu,
-                        sweep_id=sweep_id,
-                        use=use_name,
-                    )
-                except typer.Exit:
-                    console.print(f"Nothing fit for {model}, {use_name}; moving on.")
-                done += 1
+        for done, item in enumerate(plan):
+            model, model_file, model_name, use_name, prompt_tokens, gen_tokens = item
+            this_s, after_s = clock.session(done), clock.after(done)
+            left = ""
+            if this_s is not None and after_s is not None:
+                left = f" (this one: {span_words(this_s)}; {left_words(this_s + after_s)} in all)"
+            console.print(f"\nSession {done + 1} of {planned}: {model}, {use_name}{left}")
+            session = TuneSession(
+                given={"gpu_layers": None, "cpu_moe_layers": None},
+                estimate_s=this_s,
+                after_s=after_s,
+            )
+            sessions.append((model, use_name, session))
+            started = time.monotonic()
+            try:
+                tune_model(
+                    session,
+                    llama_bench,
+                    model_file,
+                    model_name,
+                    prompt_tokens,
+                    gen_tokens,
+                    repetitions,
+                    electricity,
+                    gpu,
+                    sweep_id=sweep_id,
+                    use=use_name,
+                )
+            except typer.Exit:
+                console.print(f"Nothing fit for {model}, {use_name}; moving on.")
+            clock.took.append(time.monotonic() - started)
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
 
     show_tune_sweep(sessions)
     console.print(f"All runs saved to {results_file()}")
+
+
+# How long a tuning sweep has left. Sessions differ a lot: a model that fits on the GPU is done
+# in minutes, but one that has to spill into RAM first searches for a split and then writes only
+# a few words a second, and with a long prompt that can take hours. So each session gets a guess
+# of its own (session_guess): how many runs it will have, times how long one answer should take
+# by predict's formula (predict.py), with reading the prompt guessed at PREFILL_PER_DECODE times
+# the writing speed (about what runs so far have measured). The guesses are only compared with
+# each other: once sessions finish, their real times on this computer say how much longer it
+# takes than the guess, and every session still to come is scaled by that, so the estimate
+# learns as the sweep goes. A model missing from the tables (models.py, gpus.py) is guessed at
+# the average of the finished sessions. Until a session has finished, nothing is guessed.
+
+PREFILL_PER_DECODE = 50
+
+
+def session_guess(
+    model_file: Path,
+    model_name: str | None,
+    prompt_tokens: int,
+    gen_tokens: int,
+    repetitions: int,
+    hardware: HardwareInfo,
+    gpu: int,
+) -> float | None:
+    found = find_model(model_name) if model_name else None
+    spec = gpu_facts(hardware, gpu)
+    if found is None or spec is None:
+        return None
+    tokens = prompt_tokens + gen_tokens
+    decode = predict(*found, spec, tokens, hardware.ram_gb).decode_tok_s
+    if not decode:
+        return None
+    answer_s = gen_tokens / decode + prompt_tokens / (decode * PREFILL_PER_DECODE)
+    runs = len(combinations(prompt_tokens)) + SPLIT_TRIES * split_searches(
+        model_file, hardware.gpus[gpu].vram_gb, tokens
+    )
+    return runs * repetitions * answer_s
+
+
+def split_searches(model_file: Path, vram_gb: float, tokens: int) -> int:
+    try:
+        layout = read_layout(model_file)
+        size = model_file.stat().st_size
+    except (GgufError, OSError):
+        return 0
+    guesses = {cache: first_guess(size, layout, vram_gb, tokens, cache) for cache in KV_CACHE_SIZE}
+    if guesses["f16"] is None:
+        return 0
+    return len({layout.layers if guess is None else guess for guess in guesses.values()})
+
+
+@dataclass
+class SweepClock:
+    guesses: list[float | None]
+    took: list[float] = field(default_factory=list)
+
+    def session(self, number: int) -> float | None:
+        if not self.took:
+            return None
+        finished = [(g, t) for g, t in zip(self.guesses, self.took, strict=False) if g]
+        guess = self.guesses[number]
+        if guess and finished:
+            return guess * sum(t for _, t in finished) / sum(g for g, _ in finished)
+        return sum(self.took) / len(self.took)
+
+    def after(self, number: int) -> float | None:
+        later = [self.session(n) for n in range(number + 1, len(self.guesses))]
+        return None if None in later else sum(later)
 
 
 def show_tune_sweep(sessions: list[tuple[str, str, TuneSession]]) -> None:

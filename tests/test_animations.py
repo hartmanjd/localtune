@@ -63,6 +63,8 @@ def test_times_read_plainly():
     assert left_words(30) == "under a minute left"
     assert left_words(420) == "about 7 min left"
     assert left_words(6000) == "about 1 h 40 min left"
+    both = "about 7 min left in this session, about 1 h 47 min left in all"
+    assert left_words(420, after_s=6000) == both
 
 
 def test_the_bar_fills_as_the_runs_finish():
