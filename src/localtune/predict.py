@@ -72,10 +72,11 @@ def predict(
     tokens: int,
     ram_gb: float | None = None,
     ram_bandwidth: float | None = None,
+    forced_in_ram: float = 0.0,
 ) -> Prediction:
     conversation = tokens * kv_bytes_per_token(model)
     usable = (gpu.vram_gb - RESERVED_GB) * GIB - conversation
-    in_ram = max(0.0, file.size_bytes - max(0.0, usable))
+    in_ram = max(0.0, file.size_bytes - max(0.0, usable), forced_in_ram)
     fits = None if ram_gb is None else in_ram <= (ram_gb - RAM_RESERVED_GB) * GIB
 
     decode = None
@@ -111,7 +112,9 @@ def predict(
 # The trained model (scripts/train.py) starts from a better version of it instead: the part of
 # the model in RAM is read at the RAM speed of the run's own CPU (cpus.py), with the threads
 # llama.cpp was given, where the CPU is in the table. Computers' RAM speeds differ several times
-# over, and the fixed RAM speed above was where the formula missed most.
+# over, and the fixed RAM speed above was where the formula missed most. It also counts the
+# part of the model a run kept in RAM on purpose (--gpu-layers, --cpu-moe): tune's split search
+# and the rental medium sweep do that even when the whole model would fit on the GPU.
 
 
 def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
@@ -120,8 +123,30 @@ def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
         return None
     file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
-    ram_bandwidth = None
-    if own_ram:
-        threads = run.settings.threads or run.hardware.cpu_threads
-        ram_bandwidth = ram_bandwidth_gbs(run.hardware.cpu_name, threads)
-    return predict(facts, file, gpu, tokens, run.hardware.ram_gb, ram_bandwidth).decode_tok_s
+    if not own_ram:
+        return predict(facts, file, gpu, tokens, run.hardware.ram_gb).decode_tok_s
+    threads = run.settings.threads or run.hardware.cpu_threads
+    ram_bandwidth = ram_bandwidth_gbs(run.hardware.cpu_name, threads)
+    forced = kept_in_ram(facts, run.settings.gpu_layers, run.settings.cpu_moe_layers)
+    return predict(
+        facts, file, gpu, tokens, run.hardware.ram_gb, ram_bandwidth, forced
+    ).decode_tok_s
+
+
+# How many bytes of the model a run's settings keep in RAM. --gpu-layers N leaves the other
+# layers in RAM (a negative N means all on the GPU). --cpu-moe N leaves the experts of N layers in
+# RAM; the experts' share of the file comes from the model's total and active sizes, since only
+# the experts differ between them.
+
+
+def kept_in_ram(facts: ModelFacts, gpu_layers: int | None, cpu_moe_layers: int | None) -> float:
+    layers = facts.layers
+    in_ram = 0.0
+    if gpu_layers is not None and 0 <= gpu_layers < layers:
+        in_ram += facts.file_bytes * (layers - gpu_layers) / layers
+    experts, used = facts.experts, facts.experts_used
+    if cpu_moe_layers and experts and used and experts > used:
+        expert_params = (facts.params - facts.active_params) * experts / (experts - used)
+        expert_bytes = facts.file_bytes * min(1.0, expert_params / facts.params)
+        in_ram += expert_bytes * min(cpu_moe_layers, layers) / layers
+    return min(in_ram, float(facts.file_bytes))
