@@ -1,0 +1,5 @@
+name,cores,threads,memory_channels,memory_bandwidth_gbs,source
+Core i9-12900K,16,24,2,76.8,Intel spec page (ark 134599)
+Xeon E5-2690 v4,14,28,4,76.8,Intel spec page (ark 91770)
+Xeon E5-2696 v3,18,36,4,68,Intel spec page for the Xeon E5-2699 v3 (ark 81061): same chip; the 2696 v3 was sold only to large buyers and isn't listed
+EPYC 7402,24,48,8,204.8,AMD EPYC 7002 Series datasheet (April 2020)

@@ -108,3 +108,15 @@ def test_a_saved_run_gets_the_same_estimate_as_predict():
 def test_runs_saved_without_facts_have_no_estimate():
     assert estimate_for(saved_run(model_facts=None)) is None
     assert estimate_for(saved_run(gpu_facts=None)) is None
+
+
+# A faster CPU memory makes the part of a model in RAM faster, and a model that fits on the GPU
+# doesn't care.
+
+
+def test_the_computers_ram_speed_is_used_for_the_part_in_ram():
+    slow = predict(*find_model("qwen3:30b"), GPU, tokens=768, ram_gb=64)
+    fast = predict(*find_model("qwen3:30b"), GPU, tokens=768, ram_gb=64, ram_bandwidth=204.8)
+    assert fast.decode_tok_s > slow.decode_tok_s
+    fits = predict(*find_model("qwen3:14b"), GPU, tokens=768, ram_gb=64, ram_bandwidth=204.8)
+    assert fits.decode_tok_s == pytest.approx(39.8, abs=0.1)

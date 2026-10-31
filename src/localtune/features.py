@@ -17,15 +17,15 @@ from localtune.tune import KV_CACHE_SIZE
 # the computer, the GPU's spec sheet and the model. Nothing measured during the run (power,
 # clock speeds, how busy the GPU was) is in here: those are only known afterwards, so a model
 # that used them would look brilliant in testing and fail for anyone asking about a new GPU.
-# Each one is a column of the combined table, used as a number.
+# Each one is a column of the combined table, used as a number. The CPU threads and RAM size
+# aren't: every computer measured so far has its own, so they only told the model which computer
+# a run came from, and it learned those computers instead of what makes runs fast. What the CPU
+# and RAM do to the speed is in the estimate instead, through the CPU's RAM speed (cpus.py).
 
 NUMBER_COLUMNS = [
     "settings.context_size",
     "settings.cpu_moe_layers",
-    "settings.threads",
     "settings.ubatch_size",
-    "hardware.cpu_threads",
-    "hardware.ram_gb",
     "hardware.gpu.vram_gb",
     "hardware.gpu.power_limit_w",
     "hardware.gpu.max_sm_clock_mhz",
