@@ -45,7 +45,7 @@ def short_name(name: str) -> str:
     name = name.lower().split("@")[0]
     for word in NOISE_WORDS:
         name = name.replace(word, " ")
-    words = [w for w in name.split() if not w.endswith("-core") and w not in ("gen",)]
+    words = [w for w in name.split() if not w.endswith(("-core", "-cores")) and w not in ("gen",)]
     words = [w for w in words if not (w[:-2].isdigit() and w[-2:] in ("th", "st", "nd", "rd"))]
     return " ".join(words)
 

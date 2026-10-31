@@ -16,6 +16,7 @@ def test_every_row_says_where_it_came_from():
         ("12th Gen Intel(R) Core(TM) i9-12900K", "Core i9-12900K"),
         ("Intel(R) Xeon(R) CPU E5-2696 v3 @ 2.30GHz", "Xeon E5-2696 v3"),
         ("AMD EPYC 7402 24-Core Processor", "EPYC 7402"),
+        ("AMD Ryzen Threadripper PRO 7975WX 32-Cores", "Ryzen Threadripper PRO 7975WX"),
     ],
 )
 def test_reported_names_match_the_table(reported, name):
