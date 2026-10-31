@@ -10,7 +10,7 @@ from localtune.cost import DEFAULT_PRICE
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
-from localtune.predict import estimate_for, predict
+from localtune.predict import estimate_for, kept_in_ram, predict
 from localtune.results import RunResult, RunSettings, Speed, energy_and_cost, model_facts
 
 runner = CliRunner()
@@ -143,3 +143,32 @@ def test_only_the_starting_point_uses_the_runs_own_ram_speed():
     plain = predict(*find_model("qwen3:30b"), GPU, tokens=768, ram_gb=128).decode_tok_s
     assert estimate_for(run) == pytest.approx(plain)
     assert estimate_for(run, own_ram=True) > plain
+
+
+# Layers a run kept in RAM on purpose count in the starting point even when the model would fit
+# on the GPU; the plain formula still assumes the usual placement.
+
+
+def test_layers_kept_in_ram_count_in_the_starting_point():
+    facts = model_facts("llama3.1:8b")
+    assert kept_in_ram(facts, None, None) == 0
+    assert kept_in_ram(facts, -1, None) == 0
+    assert kept_in_ram(facts, facts.layers + 1, None) == 0
+    assert kept_in_ram(facts, facts.layers // 2, None) == pytest.approx(facts.file_bytes / 2)
+
+    def run(gpu_layers):
+        return saved_run(
+            settings=RunSettings(engine="llama.cpp", model="llama3.1:8b", gpu_layers=gpu_layers),
+            model_facts=facts,
+        )
+
+    assert estimate_for(run(16)) == pytest.approx(estimate_for(run(None)))
+    assert estimate_for(run(16), own_ram=True) < estimate_for(run(None), own_ram=True) / 3
+
+
+def test_experts_kept_in_ram_are_part_of_the_file():
+    facts = model_facts("qwen3:30b")
+    all_experts = kept_in_ram(facts, None, facts.layers)
+    assert 0.8 * facts.file_bytes < all_experts < facts.file_bytes
+    assert kept_in_ram(facts, None, facts.layers // 2) == pytest.approx(all_experts / 2)
+    assert kept_in_ram(model_facts("qwen3:14b"), None, 10) == 0
