@@ -17,6 +17,7 @@
 
 from pydantic import BaseModel
 
+from localtune.cpus import ram_bandwidth_gbs
 from localtune.gpus import GpuSpec
 from localtune.models import ModelFile, ModelSpec
 from localtune.results import ModelFacts, RunResult
@@ -27,13 +28,14 @@ EFFICIENCY = 0.55
 
 
 # A model bigger than the GPU's memory still runs: llama.cpp keeps the rest in RAM, where the
-# CPU reads it far more slowly. That part is read at RAM_BANDWIDTH_GBS, the speed of two sticks
-# of DDR4-3200 memory on paper (2 x 3,200 million transfers x 8 bytes), the slowest common
-# memory in home PCs today, so the estimate assumes the model is split well between the two (which
-# "localtune tune" finds). In a mixture-of-experts model, the part moved to RAM is experts, and
-# each word only uses a few of them, so the RAM part slows it down much less. RAM_RESERVED_GB
-# is left for the operating system and other programs; a model that doesn't fit in what's left
-# of the RAM either can't run on the computer at all.
+# CPU reads it far more slowly. That part is read at the computer's own RAM speed when its CPU
+# is in localtune's CPU table (cpus.py), and otherwise at RAM_BANDWIDTH_GBS, the speed of two
+# sticks of DDR4-3200 memory on paper (2 x 3,200 million transfers x 8 bytes), the slowest
+# common memory in home PCs today. The estimate assumes the model is split well between the two
+# (which "localtune tune" finds). In a mixture-of-experts model, the part moved to RAM is
+# experts, and each word only uses a few of them, so the RAM part slows it down much less.
+# RAM_RESERVED_GB is left for the operating system and other programs; a model that doesn't fit
+# in what's left of the RAM either can't run on the computer at all.
 
 RAM_BANDWIDTH_GBS = 51.2
 RAM_RESERVED_GB = 4
@@ -67,6 +69,7 @@ def predict(
     gpu: GpuSpec,
     tokens: int,
     ram_gb: float | None = None,
+    ram_bandwidth: float | None = None,
 ) -> Prediction:
     conversation = tokens * kv_bytes_per_token(model)
     usable = (gpu.vram_gb - RESERVED_GB) * GIB - conversation
@@ -79,7 +82,7 @@ def predict(
         ram_share = model.experts_used / model.experts if model.experts else 1.0
         from_ram = min(in_ram * ram_share, used_per_word)
         seconds = (used_per_word - from_ram) / (gpu.memory_bandwidth_gbs * 1e9) + from_ram / (
-            RAM_BANDWIDTH_GBS * 1e9
+            (ram_bandwidth or RAM_BANDWIDTH_GBS) * 1e9
         )
         decode = EFFICIENCY / seconds
 
@@ -100,7 +103,8 @@ def predict(
 # The same estimate for a run that was measured, from the model and GPU facts saved with it
 # (results.py), so "localtune run", "tune", "sweep" and "results" can show it beside the real
 # speed: how far off the simple formula was, for this model on this computer. It is worked out
-# for the run's own conversation length. Runs saved before the facts were kept, or with a model
+# for the run's own conversation length, and the RAM speed of the run's CPU with the threads
+# llama.cpp was given. Runs saved before the facts were kept, or with a model
 # or GPU not in the tables, have no estimate.
 
 
@@ -110,4 +114,6 @@ def estimate_for(run: RunResult) -> float | None:
         return None
     file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
-    return predict(facts, file, gpu, tokens, run.hardware.ram_gb).decode_tok_s
+    threads = run.settings.threads or run.hardware.cpu_threads
+    ram_bandwidth = ram_bandwidth_gbs(run.hardware.cpu_name, threads)
+    return predict(facts, file, gpu, tokens, run.hardware.ram_gb, ram_bandwidth).decode_tok_s

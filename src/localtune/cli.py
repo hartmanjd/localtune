@@ -38,6 +38,7 @@ from localtune.animations import left_words, play_logo, span_words, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
+from localtune.cpus import ram_bandwidth_gbs
 from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
@@ -275,7 +276,8 @@ def predict_command(
             console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
             raise typer.Exit(1)
 
-    p = predict(*found, spec, prompt_tokens + gen_tokens, hw.ram_gb)
+    ram_bandwidth = ram_bandwidth_gbs(hw.cpu_name, hw.cpu_threads)
+    p = predict(*found, spec, prompt_tokens + gen_tokens, hw.ram_gb, ram_bandwidth)
     trained = None
     facts = model_facts(model)
     if p.decode_tok_s is not None and facts is not None:
@@ -1522,7 +1524,8 @@ def session_guess(
     if found is None or spec is None:
         return None
     tokens = prompt_tokens + gen_tokens
-    decode = predict(*found, spec, tokens, hardware.ram_gb).decode_tok_s
+    ram_bandwidth = ram_bandwidth_gbs(hardware.cpu_name, hardware.cpu_threads)
+    decode = predict(*found, spec, tokens, hardware.ram_gb, ram_bandwidth).decode_tok_s
     if not decode:
         return None
     answer_s = gen_tokens / decode + prompt_tokens / (decode * PREFILL_PER_DECODE)
