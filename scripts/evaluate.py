@@ -11,12 +11,9 @@ Run from the project folder, after scripts/combine_runs.py:
 # guesses were from what was measured. Testing on runs from a GPU the method already learned
 # from would only show how well it remembers that card.
 #
-# This scores the baselines a trained model has to beat:
-#   formula      'localtune predict' as it ships (predict.py): memory bandwidth divided by the
-#                bytes read for each word, times a fixed EFFICIENCY. It learns nothing, so it
-#                is the honest starting point.
-#   calibrated   the same formula with its efficiency learned from the other GPUs' runs, the
-#                simplest possible use of the data.
+# This scores the baseline a trained model has to beat: the formula 'localtune predict' shows
+# (predict.py), memory bandwidth divided by the bytes read for each word, times a fixed
+# EFFICIENCY. It learns nothing, so it is the honest starting point.
 
 import csv
 import statistics
@@ -60,19 +57,13 @@ def formula(train: list[dict], test: list[dict]) -> list[float]:
     return [float(row[ESTIMATE]) for row in test]
 
 
-def calibrated(train: list[dict], test: list[dict]) -> list[float] | None:
-    if not train:
-        return None
-    return [float(row[ESTIMATE]) * learned_factor(train) for row in test]
-
-
 # How much faster or slower than the formula the runs really were, as one number: the median of
 # measured divided by estimated, so a few odd runs can't pull it around. The formula already
 # includes EFFICIENCY, so this factor times EFFICIENCY is the efficiency the data points to.
 
 
-def learned_factor(train: list[dict]) -> float:
-    return statistics.median(float(row[TARGET]) / float(row[ESTIMATE]) for row in train)
+def learned_factor(rows: list[dict]) -> float:
+    return statistics.median(float(row[TARGET]) / float(row[ESTIMATE]) for row in rows)
 
 
 # The error of a set of guesses: on average, how many percent each one was off the measured
@@ -128,7 +119,7 @@ def main() -> None:
     if not rows:
         console.print("No usable runs with an estimate to score yet.")
         sys.exit(1)
-    methods = {"Formula": formula, "Calibrated": calibrated}
+    methods = {"Formula": formula}
     table = Table(title="Writing speed (decode tok/s), each GPU predicted without its own runs")
     table.add_column("GPU")
     for column in ["Runs"] + [f"{name} error" for name in methods]:
@@ -140,10 +131,6 @@ def main() -> None:
         f"The formula uses an efficiency of {EFFICIENCY}; all runs together point to "
         f"{EFFICIENCY * learned_factor(rows):.2f}."
     )
-    if len({row[GPU] for row in rows}) < 2:
-        console.print(
-            "Calibrated needs runs from at least two GPUs: one to learn from, one to test."
-        )
     if without_estimate:
         console.print(
             f"{without_estimate} usable runs have no estimate (saved before localtune kept "
