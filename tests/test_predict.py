@@ -120,3 +120,26 @@ def test_the_computers_ram_speed_is_used_for_the_part_in_ram():
     assert fast.decode_tok_s > slow.decode_tok_s
     fits = predict(*find_model("qwen3:14b"), GPU, tokens=768, ram_gb=64, ram_bandwidth=204.8)
     assert fits.decode_tok_s == pytest.approx(39.8, abs=0.1)
+
+
+# The estimate a measured run shows stays the plain formula; only the trained model's starting
+# point uses the run's own CPU's RAM speed.
+
+
+def test_only_the_starting_point_uses_the_runs_own_ram_speed():
+    hardware = HardwareInfo(
+        os="Linux",
+        is_wsl=False,
+        cpu_name="AMD EPYC 7402 24-Core Processor",
+        cpu_threads=24,
+        ram_gb=128.0,
+        gpus=[],
+    )
+    run = saved_run(
+        settings=RunSettings(engine="llama.cpp", model="qwen3:30b"),
+        hardware=hardware,
+        model_facts=model_facts("qwen3:30b"),
+    )
+    plain = predict(*find_model("qwen3:30b"), GPU, tokens=768, ram_gb=128).decode_tok_s
+    assert estimate_for(run) == pytest.approx(plain)
+    assert estimate_for(run, own_ram=True) > plain

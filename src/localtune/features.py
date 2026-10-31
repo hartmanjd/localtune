@@ -20,7 +20,8 @@ from localtune.tune import KV_CACHE_SIZE
 # Each one is a column of the combined table, used as a number. The CPU threads and RAM size
 # aren't: every computer measured so far has its own, so they only told the model which computer
 # a run came from, and it learned those computers instead of what makes runs fast. What the CPU
-# and RAM do to the speed is in the estimate instead, through the CPU's RAM speed (cpus.py).
+# and RAM do to the speed is in the model's starting point instead: the estimate worked out with
+# the CPU's own RAM speed (predict.estimate_for).
 
 NUMBER_COLUMNS = [
     "settings.context_size",
@@ -44,7 +45,7 @@ NUMBER_COLUMNS = [
     "model_facts.experts",
     "model_facts.experts_used",
     "model_facts.file_bytes",
-    "estimate.decode_tok_s",
+    "estimate.own_ram_decode_tok_s",
 ]
 
 # A few inputs are worked out from columns, because the column alone means little: the share of

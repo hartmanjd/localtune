@@ -6,10 +6,11 @@
 # normal install), nothing here does anything and 'localtune predict' shows the formula alone.
 #
 # The model learned how many times faster or slower than the formula (predict.py) real runs
-# were, from the inputs in features.py. So a guess is the formula's estimate times that learned
-# factor, for a row of run data shaped like the ones it was trained on. A model file saved with
-# different inputs than this version of localtune works out is ignored, because its guesses
-# would mean nothing.
+# were, from the inputs in features.py. It starts from the formula worked out with the
+# computer's own RAM speed (START, predict.estimate_for). So a guess is that estimate times the
+# learned factor, for a row of run data shaped like the ones it was trained on. A model file
+# saved with different inputs than this version of localtune works out is ignored, because its
+# guesses would mean nothing.
 
 import math
 from pathlib import Path
@@ -21,6 +22,8 @@ from localtune.predict import Prediction
 from localtune.results import ModelFacts, RunSettings, flatten, home_dir
 from localtune.runners.llamacpp import DEPTH_FROM
 from localtune.tune import DEFAULT_UBATCH
+
+START = "estimate.own_ram_decode_tok_s"
 
 
 def model_file() -> Path:
@@ -41,7 +44,7 @@ def load_model():
 
 
 def trained_estimate(row: dict) -> float | None:
-    estimate = number(row, "estimate.decode_tok_s")
+    estimate = number(row, START)
     model = load_model()
     if model is None or math.isnan(estimate):
         return None
@@ -56,7 +59,8 @@ def trained_estimate(row: dict) -> float | None:
 # like the saved ones (results.flat_record): llama.cpp with its usual settings (tune.DEFAULTS),
 # on this computer (or, for a GPU named with --gpu-name, on a computer nothing else is known
 # about), for the use's prompt and answer, writing after the prompt when it's long enough for
-# that to be measured (DEPTH_FROM). When the model doesn't all fit on the GPU, it is split the
+# that to be measured (DEPTH_FROM). own_ram is the estimate worked out with this computer's own
+# RAM speed, the model's starting point. When the model doesn't all fit on the GPU, it is split the
 # way the formula assumes: a dense model keeps as many of its layers on the GPU as fit, a
 # mixture-of-experts model keeps every layer there and moves just enough layers' experts to RAM.
 
@@ -69,6 +73,7 @@ def planned_run(
     gpu_index: int,
     prompt_tokens: int,
     gen_tokens: int,
+    own_ram: Prediction | None = None,
 ) -> dict:
     settings = RunSettings(
         engine="llama.cpp",
@@ -89,7 +94,10 @@ def planned_run(
         "hardware": machine,
         "model_facts": facts.model_dump(mode="json"),
         "gpu_facts": gpu.model_dump(mode="json"),
-        "estimate": {"decode_tok_s": p.decode_tok_s},
+        "estimate": {
+            "decode_tok_s": p.decode_tok_s,
+            "own_ram_decode_tok_s": (own_ram or p).decode_tok_s,
+        },
     }
     return flatten(run)
 

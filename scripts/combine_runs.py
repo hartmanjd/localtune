@@ -86,6 +86,7 @@ def combine(runs_dir: Path = RUNS_DIR) -> list[dict]:
                 | flat_record(run)
                 | {
                     "estimate.decode_tok_s": estimate_for(run),
+                    "estimate.own_ram_decode_tok_s": estimate_for(run, own_ram=True),
                     "facts_filled": filled,
                     "skip_reason": skip_reason(run),
                 }
