@@ -14,6 +14,11 @@ Add --save to also keep a model trained on every run, for 'localtune predict' on
 # that learned factor. Starting from physics this way needs far less data than learning speed
 # alone, and a GPU the model never saw still gets a sensible answer from its spec sheet.
 #
+# The formula it starts from (START) is the one 'localtune predict' shows, except that the part
+# of a model in RAM is read at the run's own CPU's RAM speed (predict.estimate_for) instead of
+# one fixed speed for every computer. That makes it part of this model, not of the yardstick:
+# "Formula" in the scores is still the plain formula, unchanged.
+#
 # It is scored exactly like the baselines (evaluate.py): each GPU in turn is left out, the model
 # is trained on every other GPU's runs, and it predicts the one left out.
 
@@ -23,7 +28,6 @@ from pathlib import Path
 
 import numpy as np
 from evaluate import (
-    ESTIMATE,
     GPU,
     RUNS_FILE,
     TARGET,
@@ -37,7 +41,7 @@ from evaluate import (
 from rich.table import Table
 
 from localtune.features import FEATURES, inputs
-from localtune.speed_model import model_file
+from localtune.speed_model import START, model_file
 
 # The inputs the model sees for each run are worked out in features.py, so that training and
 # 'localtune predict' build them the same way.
@@ -52,7 +56,7 @@ def features(rows: list[dict]) -> np.ndarray:
 
 
 def gap(rows: list[dict]) -> np.ndarray:
-    return np.array([math.log(float(r[TARGET]) / float(r[ESTIMATE])) for r in rows])
+    return np.array([math.log(float(r[TARGET]) / float(r[START])) for r in rows])
 
 
 # The model's settings, kept small and fixed (no searching for the best ones, which would need
@@ -85,7 +89,7 @@ def xgboost(train: list[dict], test: list[dict]) -> list[float] | None:
 
     data = xgboost.DMatrix(features(test), feature_names=FEATURES)
     factors = np.exp(fit(train).predict(data))
-    return [float(row[ESTIMATE]) * float(f) for row, f in zip(test, factors, strict=True)]
+    return [float(row[START]) * float(f) for row, f in zip(test, factors, strict=True)]
 
 
 # Which inputs the model leaned on most, from a model trained on every usable run: how much

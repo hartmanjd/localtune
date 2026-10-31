@@ -276,12 +276,15 @@ def predict_command(
             console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
             raise typer.Exit(1)
 
-    ram_bandwidth = ram_bandwidth_gbs(hw.cpu_name, hw.cpu_threads)
-    p = predict(*found, spec, prompt_tokens + gen_tokens, hw.ram_gb, ram_bandwidth)
+    tokens = prompt_tokens + gen_tokens
+    p = predict(*found, spec, tokens, hw.ram_gb)
     trained = None
     facts = model_facts(model)
     if p.decode_tok_s is not None and facts is not None:
-        trained = trained_estimate(planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens))
+        ram_bandwidth = ram_bandwidth_gbs(hw.cpu_name, hw.cpu_threads)
+        own_ram = predict(*found, spec, tokens, hw.ram_gb, ram_bandwidth)
+        planned = planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens, own_ram)
+        trained = trained_estimate(planned)
     show_prediction(p, use, trained)
 
 

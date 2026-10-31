@@ -16,6 +16,7 @@ def row(gpu="RTX 3090", measured=100, estimate=80, **columns):
         "hardware.gpu.name": gpu,
         "speed.decode_tok_s": str(measured),
         "estimate.decode_tok_s": str(estimate),
+        "estimate.own_ram_decode_tok_s": str(estimate),
         "skip_reason": "",
     } | {key: str(value) for key, value in columns.items()}
 
