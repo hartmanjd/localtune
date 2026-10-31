@@ -305,10 +305,12 @@ LABEL_ROW = {"doctor": 1}
 
 
 # Beside every animation's label: how long the step has been running, and, when it can
-# be estimated (cli.py works it out from the runs so far, or from the last run like it), how much
-# longer the whole command should take, counting down as it goes. A tuning session inside a
-# sweep shows both: how long this session has left, and the whole sweep with it. A single step
-# with an estimate also fills its bar as the time passes.
+# be estimated (eta.py), how much longer the whole command should take, counting down as it
+# goes. A tuning session inside a sweep shows both: how long this session has left, and the
+# whole sweep with it. A single step with an estimate also fills its bar as the time passes.
+# A guess made without any of this computer's own runs to go on says it's a rough guess, and
+# one that runs out before the step is done says so plainly instead of claiming it's nearly
+# finished.
 
 
 def clock(seconds: float) -> str:
@@ -326,13 +328,14 @@ def span_words(seconds: float) -> str:
     return f"about {minutes // 60} h {minutes % 60} min"
 
 
-def left_words(seconds: float, after_s: float | None = None) -> str:
+def left_words(seconds: float, after_s: float | None = None, rough: bool = False) -> str:
+    guess = " (rough guess)" if rough else ""
     if after_s is not None:
         here = left_words(seconds)
-        return f"{here} in this session, {left_words(max(0, seconds) + after_s)} in all"
+        return f"{here} in this session, {left_words(max(0, seconds) + after_s)} in all{guess}"
     if seconds <= 0:
-        return "almost done"
-    return f"{span_words(seconds)} left"
+        return "taking longer than guessed"
+    return f"{span_words(seconds)} left{guess}"
 
 
 class Loader:
@@ -343,9 +346,10 @@ class Loader:
         progress: float | None,
         left_s: float | None = None,
         after_s: float | None = None,
+        rough: bool = False,
     ) -> None:
         self.scene, self.label, self.progress, self.left_s = scene, label, progress, left_s
-        self.after_s = after_s
+        self.after_s, self.rough = after_s, rough
         self.started = time.monotonic()
 
     def frame(self, seconds: float) -> Text:
@@ -356,7 +360,7 @@ class Loader:
         at = LABEL_ROW.get(self.scene, len(rows) - 1)
         status = clock(seconds)
         if self.left_s is not None:
-            status += f" · {left_words(self.left_s - seconds, self.after_s)}"
+            status += f" · {left_words(self.left_s - seconds, self.after_s, self.rough)}"
         rows[at] = rows[at] + Text(self.label) + Text(f"  {status}", style="grey50")
         return Text("  ") + Text("\n  ").join(rows)
 
@@ -372,14 +376,15 @@ def working(
     progress: float | None = None,
     left_s: float | None = None,
     after_s: float | None = None,
+    rough: bool = False,
 ) -> Iterator[None]:
     if not enabled(console):
-        left = f" ({left_words(left_s, after_s)})" if left_s is not None else ""
+        left = f" ({left_words(left_s, after_s, rough)})" if left_s is not None else ""
         with console.status(label + left):
             yield
         return
     with Live(
-        Loader(scene, label, progress, left_s, after_s),
+        Loader(scene, label, progress, left_s, after_s, rough),
         console=console,
         refresh_per_second=FPS,
         transient=True,

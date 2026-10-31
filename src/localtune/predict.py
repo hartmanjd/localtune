@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from localtune.cpus import ram_bandwidth_gbs
 from localtune.gpus import GpuSpec
+from localtune.hardware import HardwareInfo
 from localtune.models import ModelFile, ModelSpec
 from localtune.results import ModelFacts, RunResult
 from localtune.tune import RESERVED_GB
@@ -125,12 +126,25 @@ def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
     if not own_ram:
         return predict(facts, file, gpu, tokens, run.hardware.ram_gb).decode_tok_s
-    threads = run.settings.threads or run.hardware.cpu_threads
-    ram_bandwidth = ram_bandwidth_gbs(run.hardware.cpu_name, threads)
-    forced = kept_in_ram(facts, run.settings.gpu_layers, run.settings.cpu_moe_layers)
-    return predict(
-        facts, file, gpu, tokens, run.hardware.ram_gb, ram_bandwidth, forced
-    ).decode_tok_s
+    s = run.settings
+    return own_ram_estimate(
+        facts, gpu, run.hardware, tokens, s.threads, s.gpu_layers, s.cpu_moe_layers
+    )
+
+
+def own_ram_estimate(
+    facts: ModelFacts,
+    gpu: GpuSpec,
+    hardware: HardwareInfo,
+    tokens: int,
+    threads: int | None = None,
+    gpu_layers: int | None = None,
+    cpu_moe_layers: int | None = None,
+) -> float | None:
+    file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
+    ram_bandwidth = ram_bandwidth_gbs(hardware.cpu_name, threads or hardware.cpu_threads)
+    forced = kept_in_ram(facts, gpu_layers, cpu_moe_layers)
+    return predict(facts, file, gpu, tokens, hardware.ram_gb, ram_bandwidth, forced).decode_tok_s
 
 
 # How many bytes of the model a run's settings keep in RAM. --gpu-layers N leaves the other

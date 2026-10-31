@@ -8,7 +8,8 @@
 # for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
 # benchmarks, predict.py for estimates before a model is downloaded, tune.py for the settings
 # tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs, ollama_pull.py
-# for downloading a missing model) and shows the answers.
+# for downloading a missing model, eta.py for how long a benchmark should take) and shows the
+# answers.
 
 import csv
 import sys
@@ -40,6 +41,7 @@ from localtune.background import Background, busy_reasons, read_background
 from localtune.cost import energy_cost, hourly_cost
 from localtune.cpus import ram_bandwidth_gbs
 from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
+from localtune.eta import SweepClock, guess_run, pace, raw_seconds
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
 from localtune.gpus import find_gpu_spec
@@ -409,28 +411,6 @@ def offer_llama_cpp(ask: bool) -> bool:
     return True
 
 
-# How long a run usually takes on this computer: as long as the last saved run of the same
-# model, engine and lengths, which is what the time left while it runs is estimated from. The
-# first run of a model has nothing to go by, so it only shows how long it has been running.
-
-
-def usual_seconds(
-    requested: RunSettings, prompt_tokens: int, gen_tokens: int, repetitions: int
-) -> float | None:
-    same = [
-        run.gpu.duration_s
-        for run in load_results()
-        if run.status == "ok"
-        and run.gpu is not None
-        and run.speed is not None
-        and (run.settings.engine, run.settings.model) == (requested.engine, requested.model)
-        and run.repetitions == repetitions
-        and run.speed.prompt_tokens == prompt_tokens * repetitions
-        and run.speed.generated_tokens == gen_tokens * repetitions
-    ]
-    return same[-1] if same else None
-
-
 # "localtune run": benchmarks a model and saves the result. With llama.cpp (the default) it
 # benchmarks a model file; with "-b api" it benchmarks a model in a local AI server that's
 # already running (runners/web_api.py), found by itself or at --url. While the engine runs, the
@@ -539,8 +519,20 @@ def run(
         label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
-    usual = usual_seconds(requested, prompt_tokens, gen_tokens, repetitions)
-    with working(console, "run", label, left_s=usual):
+    guess = guess_run(
+        load_results(),
+        requested.model,
+        detect_hardware(),
+        gpu,
+        prompt_tokens,
+        gen_tokens,
+        repetitions,
+        requested.gpu_layers,
+        requested.cpu_moe_layers,
+        requested.threads,
+    )
+    left, rough = (guess.seconds, guess.rough) if guess else (None, False)
+    with working(console, "run", label, left_s=left, rough=rough):
         result = measure(
             engine, requested, electricity, repetitions, gpu_index=gpu, background=background
         )
@@ -841,6 +833,19 @@ def tune(
     warn_if_busy(gpu)
     electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     session = TuneSession(given={"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe})
+    guess = session_guess(
+        model_file,
+        model_name,
+        prompt_tokens,
+        gen_tokens,
+        repetitions,
+        detect_hardware(),
+        gpu,
+        session.given,
+    )
+    if guess is not None:
+        scale = pace(load_results(), model_name)
+        session.estimate_s, session.rough = guess * (scale or 1.0), scale is None
     try:
         tune_model(
             session,
@@ -930,11 +935,19 @@ def compare_with_ollama(
         prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, repetitions=repetitions
     )
     requested = web_api_settings(server, name, options)
-    usual = usual_seconds(requested, prompt_tokens, gen_tokens, repetitions)
+    guess = guess_run(
+        load_results(),
+        name,
+        best.hardware,
+        best.gpu_index,
+        prompt_tokens,
+        gen_tokens,
+        repetitions,
+    )
     engine = partial(run_web_api, server, name, options)
-    with working(
-        console, "run", f"Running the same test in Ollama {server.version}...", None, usual
-    ):
+    label = f"Running the same test in Ollama {server.version}..."
+    left, rough = (guess.seconds, guess.rough) if guess else (None, False)
+    with working(console, "run", label, left_s=left, rough=rough):
         result = measure(engine, requested, electricity, repetitions, gpu_index=best.gpu_index)
     result.tune_id, result.use = best.tune_id, best.use
     save_result(result)
@@ -960,9 +973,10 @@ def compare_with_ollama(
 # soon as it finishes, with the session's tune_id (and the sweep's sweep_id), and lands in the
 # session as it goes, so whatever finished is kept when Ctrl+C stops it. It also knows how many
 # layers the model has, so a split can say "40 of 65 layers on the GPU" (llama.cpp counts the
-# output layer as one more, so 66 of them means the whole model). Inside a sweep it also carries
-# the sweep's guess of how long it takes (estimate_s, used until its first run is done) and how
-# long the sessions after it should take (after_s), so its countdown can show the whole sweep too.
+# output layer as one more, so 66 of them means the whole model). It also carries a guess of how
+# long it takes (estimate_s, used until its first run is done, and rough when this computer has
+# no runs to go on; eta.py), and inside a sweep how long the sessions after it should take
+# (after_s), so its countdown can show the whole sweep too.
 
 
 @dataclass
@@ -975,6 +989,7 @@ class TuneSession:
     benched: int = 0
     expected: int = 0
     estimate_s: float | None = None
+    rough: bool = False
     after_s: float | None = None
 
     def placement_of(self, run: RunResult) -> dict:
@@ -1027,10 +1042,10 @@ def tune_model(
         requested = requested_settings(model_file, options, model_name)
         done, expected = session.benched, max(session.expected, session.benched + 1)
         elapsed = time.monotonic() - started
-        left = seconds_left(elapsed, done, expected)
+        left, rough = seconds_left(elapsed, done, expected), False
         if left is None and session.estimate_s is not None:
-            left = max(0.0, session.estimate_s - elapsed)
-        with working(console, "tune", label, done / expected, left, session.after_s):
+            left, rough = max(0.0, session.estimate_s - elapsed), session.rough
+        with working(console, "tune", label, done / expected, left, session.after_s, rough):
             result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
         session.benched += 1
         result.tune_id, result.sweep_id, result.use = tune_id, sweep_id, use
@@ -1297,7 +1312,9 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
 # "localtune run" without options, except that a model too big for the GPU starts from tune's
 # first guess at a GPU/RAM split (tune.py), so it doesn't crawl. The runs share a sweep_id and
 # each is saved as soon as it finishes; Ctrl+C stops the sweep with the finished runs kept, and
-# a model that fails is noted and skipped. A table at the end shows every run. With --tune,
+# a model that fails is noted and skipped. While it runs it shows how long the whole sweep has
+# left, guessed for each run and learning from the runs as they finish (eta.py). A table at the
+# end shows every run. With --tune,
 # every model and use gets a whole tuning session instead (tune_sweep, below). With --resume,
 # a sweep that stopped (Ctrl+C, a crash, a restart) carries on under the same sweep_id,
 # skipping the models and uses it already finished (last_sweep, below).
@@ -1359,43 +1376,62 @@ def sweep(
     if tune:
         tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished)
         return
-    planned = max(1, len(models) * len(lengths) - len(finished))
+    plan = []
+    for model in models:
+        model_file, model_name = find_model_file(model)
+        if model_file is None:
+            console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
+            continue
+        for use_name, (prompt_tokens, gen_tokens) in lengths.items():
+            if (model_name or model_file.stem, use_name) not in finished:
+                placement = guessed_split(model_file, gpu, prompt_tokens + gen_tokens)
+                plan.append((model, model_file, model_name, use_name, placement))
+    planned = max(1, len(plan))
     console.print(
         f"Benchmarking {len(models)} model{'s' if len(models) > 1 else ''} for "
         f"{', '.join(lengths)}: {planned} run{'s' if planned > 1 else ''}, "
         "one at a time. Ctrl+C stops it and keeps the finished runs."
     )
+    hardware = detect_hardware()
+    clock = SweepClock(
+        [
+            raw_seconds(
+                model_facts(model_name) if model_name else None,
+                gpu_facts(hardware, gpu),
+                hardware,
+                *lengths[use_name],
+                repetitions,
+                placement.get("gpu_layers"),
+                placement.get("cpu_moe_layers"),
+            )
+            for _, _, model_name, use_name, placement in plan
+        ],
+        prior=pace(load_results()),
+    )
     runs: list[tuple[str, RunResult]] = []
-    started, done = time.monotonic(), 0
     try:
-        for model in models:
-            model_file, model_name = find_model_file(model)
-            if model_file is None:
-                console.print(f"Skipping {model}: it isn't a model file or an Ollama model.")
-                done += len(lengths)
-                continue
-            for use_name, (prompt_tokens, gen_tokens) in lengths.items():
-                if (model_name or model_file.stem, use_name) in finished:
-                    continue
-                placement = guessed_split(model_file, gpu, prompt_tokens + gen_tokens)
-                options = BenchOptions(
-                    prompt_tokens=prompt_tokens,
-                    gen_tokens=gen_tokens,
-                    repetitions=repetitions,
-                    gpu_index=gpu,
-                    **placement,
-                )
-                engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
-                requested = requested_settings(model_file, options, model_name)
-                left = seconds_left(time.monotonic() - started, done, planned)
-                label = f"Run {done + 1} of {planned}: {model}, {use_name}"
-                with working(console, "sweep", label, done / planned, left):
-                    result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
-                result.sweep_id, result.use = sweep_id, use_name
-                save_result(result)
-                runs.append((use_name, result))
-                done += 1
-                console.print(f"{done:>3}. {model}, {use_name}: {outcome(result)}")
+        for done, (model, model_file, model_name, use_name, placement) in enumerate(plan):
+            prompt_tokens, gen_tokens = lengths[use_name]
+            options = BenchOptions(
+                prompt_tokens=prompt_tokens,
+                gen_tokens=gen_tokens,
+                repetitions=repetitions,
+                gpu_index=gpu,
+                **placement,
+            )
+            engine = partial(run_llama_bench, llama_bench, model_file, options, model_name)
+            requested = requested_settings(model_file, options, model_name)
+            label = f"Run {done + 1} of {planned}: {model}, {use_name}"
+            started = time.monotonic()
+            with working(
+                console, "sweep", label, done / planned, clock.left(done), rough=clock.rough
+            ):
+                result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+            clock.took.append(time.monotonic() - started if result.status == "ok" else None)
+            result.sweep_id, result.use = sweep_id, use_name
+            save_result(result)
+            runs.append((use_name, result))
+            console.print(f"{done + 1:>3}. {model}, {use_name}: {outcome(result)}")
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
 
@@ -1457,7 +1493,8 @@ def tune_sweep(
         [
             session_guess(model_file, model_name, prompt, gen, repetitions, hardware, gpu)
             for _, model_file, model_name, _, prompt, gen in plan
-        ]
+        ],
+        prior=pace(load_results()),
     )
     sessions: list[tuple[str, str, TuneSession]] = []
     try:
@@ -1466,11 +1503,14 @@ def tune_sweep(
             this_s, after_s = clock.session(done), clock.after(done)
             left = ""
             if this_s is not None and after_s is not None:
-                left = f" (this one: {span_words(this_s)}; {left_words(this_s + after_s)} in all)"
+                rough = "; a rough guess" if clock.rough else ""
+                all_left = left_words(this_s + after_s)
+                left = f" (this one: {span_words(this_s)}; {all_left} in all{rough})"
             console.print(f"\nSession {done + 1} of {planned}: {model}, {use_name}{left}")
             session = TuneSession(
                 given={"gpu_layers": None, "cpu_moe_layers": None},
                 estimate_s=this_s,
+                rough=clock.rough,
                 after_s=after_s,
             )
             sessions.append((model, use_name, session))
@@ -1489,9 +1529,10 @@ def tune_sweep(
                     sweep_id=sweep_id,
                     use=use_name,
                 )
+                clock.took.append(time.monotonic() - started)
             except typer.Exit:
                 console.print(f"Nothing fit for {model}, {use_name}; moving on.")
-            clock.took.append(time.monotonic() - started)
+                clock.took.append(None)
     except KeyboardInterrupt:
         console.print("Stopped. The runs that finished are saved.")
 
@@ -1499,18 +1540,10 @@ def tune_sweep(
     console.print(f"All runs saved to {results_file()}")
 
 
-# How long a tuning sweep has left. Sessions differ a lot: a model that fits on the GPU is done
-# in minutes, but one that has to spill into RAM first searches for a split and then writes only
-# a few words a second, and with a long prompt that can take hours. So each session gets a guess
-# of its own (session_guess): how many runs it will have, times how long one answer should take
-# by predict's formula (predict.py), with reading the prompt guessed at PREFILL_PER_DECODE times
-# the writing speed (about what runs so far have measured). The guesses are only compared with
-# each other: once sessions finish, their real times on this computer say how much longer it
-# takes than the guess, and every session still to come is scaled by that, so the estimate
-# learns as the sweep goes. A model missing from the tables (models.py, gpus.py) is guessed at
-# the average of the finished sessions. Until a session has finished, nothing is guessed.
-
-PREFILL_PER_DECODE = 50
+# How long a tuning session should take (eta.py): how many runs it will have, each guessed like a
+# single run. A model too big for the GPU first searches for a split, about SPLIT_TRIES runs per
+# distinct first guess (find_splits), unless the split was given. The runs' settings differ, but
+# for a guess the usual ones are close enough.
 
 
 def session_guess(
@@ -1521,21 +1554,27 @@ def session_guess(
     repetitions: int,
     hardware: HardwareInfo,
     gpu: int,
+    given: dict | None = None,
 ) -> float | None:
-    found = find_model(model_name) if model_name else None
-    spec = gpu_facts(hardware, gpu)
-    if found is None or spec is None:
-        return None
-    tokens = prompt_tokens + gen_tokens
-    ram_bandwidth = ram_bandwidth_gbs(hardware.cpu_name, hardware.cpu_threads)
-    decode = predict(*found, spec, tokens, hardware.ram_gb, ram_bandwidth).decode_tok_s
-    if not decode:
-        return None
-    answer_s = gen_tokens / decode + prompt_tokens / (decode * PREFILL_PER_DECODE)
-    runs = len(combinations(prompt_tokens)) + SPLIT_TRIES * split_searches(
-        model_file, hardware.gpus[gpu].vram_gb, tokens
+    given = given or {}
+    facts = model_facts(model_name) if model_name else None
+    one_run = raw_seconds(
+        facts,
+        gpu_facts(hardware, gpu),
+        hardware,
+        prompt_tokens,
+        gen_tokens,
+        repetitions,
+        given.get("gpu_layers"),
+        given.get("cpu_moe_layers"),
     )
-    return runs * repetitions * answer_s
+    if one_run is None:
+        return None
+    runs = len(combinations(prompt_tokens))
+    if not any(value is not None for value in given.values()):
+        tokens = prompt_tokens + gen_tokens
+        runs += SPLIT_TRIES * split_searches(model_file, hardware.gpus[gpu].vram_gb, tokens)
+    return runs * one_run
 
 
 def split_searches(model_file: Path, vram_gb: float, tokens: int) -> int:
@@ -1548,25 +1587,6 @@ def split_searches(model_file: Path, vram_gb: float, tokens: int) -> int:
     if guesses["f16"] is None:
         return 0
     return len({layout.layers if guess is None else guess for guess in guesses.values()})
-
-
-@dataclass
-class SweepClock:
-    guesses: list[float | None]
-    took: list[float] = field(default_factory=list)
-
-    def session(self, number: int) -> float | None:
-        if not self.took:
-            return None
-        finished = [(g, t) for g, t in zip(self.guesses, self.took, strict=False) if g]
-        guess = self.guesses[number]
-        if guess and finished:
-            return guess * sum(t for _, t in finished) / sum(g for g, _ in finished)
-        return sum(self.took) / len(self.took)
-
-    def after(self, number: int) -> float | None:
-        later = [self.session(n) for n in range(number + 1, len(self.guesses))]
-        return None if None in later else sum(later)
 
 
 def show_tune_sweep(sessions: list[tuple[str, str, TuneSession]]) -> None:

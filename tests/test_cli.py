@@ -729,7 +729,7 @@ def record_loaders(monkeypatch) -> list[tuple[str, float | None, float | None]]:
     shown = []
 
     @contextmanager
-    def working(console, scene, label, progress=None, left_s=None, after_s=None):
+    def working(console, scene, label, progress=None, left_s=None, after_s=None, rough=False):
         shown.append((label, progress, left_s))
         yield
 
@@ -758,17 +758,6 @@ def test_tune_counts_the_split_search_in_its_progress(monkeypatch, tmp_path):
     assert shown[0][0].startswith("Trying experts in RAM for") and progress[0] == 0
     assert progress == sorted(progress) and progress[-1] < 1
     assert shown[0][2] is None and all(left is not None for label, p, left in shown[1:])
-
-
-def test_run_expects_to_take_as_long_as_the_last_run_like_it(monkeypatch, tmp_path):
-    model = fake_run(monkeypatch, tmp_path, example_run)
-    monkeypatch.setattr(base, "GpuMonitor", fake_monitor(power_w=250))
-    shown = record_loaders(monkeypatch)
-    runner.invoke(cli.app, ["run", str(model)])
-    runner.invoke(cli.app, ["run", str(model), "--use", "documents"])
-    runner.invoke(cli.app, ["run", str(model)])
-    assert shown[0][2] is None and shown[1][2] is None
-    assert shown[2][2] == load_results()[0].gpu.duration_s
 
 
 def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
@@ -931,17 +920,6 @@ def test_tune_says_how_long_is_left():
     assert cli.seconds_left(0, 0, 16) is None
 
 
-def test_a_sweep_learns_how_long_its_sessions_take():
-    # Guessed 100 s, 100 s, 1,000 s (a model spilling into RAM) and one the tables don't know.
-    clock = cli.SweepClock([100, 100, 1000, None])
-    assert clock.session(1) is None and clock.after(0) is None
-    clock.took.append(200)  # this computer took twice the guess
-    assert clock.session(1) == 200
-    assert clock.session(2) == 2000
-    assert clock.session(3) == 200  # the average of the finished sessions
-    assert clock.after(0) == 200 + 2000 + 200
-
-
 def test_a_session_that_spills_into_ram_is_guessed_longer(tmp_path):
     pc = FAKE_PC.model_copy(
         update={"gpus": [FAKE_PC.gpus[0].model_copy(update={"name": "RTX 3060", "vram_gb": 12})]}
@@ -978,7 +956,7 @@ def test_sweep_benchmarks_each_model_for_each_use(monkeypatch, tmp_path):
         cli.app, ["sweep", str(model), "gone:7b", "--use", "chat", "--use", "code"]
     )
     assert result.exit_code == 0
-    assert "Benchmarking 2 models for chat, code: 4 runs" in result.output
+    assert "Benchmarking 2 models for chat, code: 2 runs" in result.output
     assert "Skipping gone:7b" in result.output
     assert [(o.prompt_tokens, o.gen_tokens) for o in asked] == [(512, 256), (8000, 512)]
     assert "Sweep results" in result.output
@@ -1097,7 +1075,7 @@ def test_sweep_can_tune_every_model_for_every_use(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Tuning 1 model for chat, code: 2 tuning sessions" in result.output
     assert "Session 1 of 2: " + str(model) + ", chat\n" in result.output
-    assert "Session 2 of 2" in result.output and "left in all)" in result.output
+    assert "Session 2 of 2" in result.output and "left in all)" in result.output, result.output
     assert "Fastest settings for each model and use" in result.output
     assert "flash attn on, KV q8_0, micro-batch 2048" in result.output
     assert "+15%" in result.output

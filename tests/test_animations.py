@@ -54,7 +54,10 @@ def test_every_loader_is_small_and_shows_its_label(scene, progress):
 def test_a_loader_shows_how_long_it_has_run_and_how_long_is_left():
     assert "1:05" in Loader("run", "Run", None).frame(65).plain
     assert "0:30 · about 2 min left" in Loader("run", "Run", None, 150).frame(30).plain
-    assert "almost done" in Loader("run", "Run", None, 10).frame(20).plain
+    assert "taking longer than guessed" in Loader("run", "Run", None, 10).frame(20).plain
+    assert (
+        "about 2 min left (rough guess)" in Loader("run", "", None, 150, rough=True).frame(30).plain
+    )
     assert Loader("run", "", None, 100).frame(50).plain.count("=") == 5
 
 
