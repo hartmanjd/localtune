@@ -45,15 +45,9 @@ def test_each_gpu_is_predicted_only_from_the_others():
     assert seen == [{"RTX 4090"}, {"RTX 3090"}]
 
 
-def test_calibrated_learns_the_other_gpus_factor():
-    scores = evaluate.leave_one_gpu_out(ROWS, evaluate.calibrated)
-    # The 3090 gets the 4090's factor of 2, and the 4090 the 3090's 1.25.
-    assert scores["RTX 3090"][0] == [160, 160]
-    assert scores["RTX 4090"][0] == [100]
-
-
-def test_calibrated_needs_another_gpu_to_learn_from():
-    assert evaluate.leave_one_gpu_out(ROWS[:2], evaluate.calibrated) == {}
+def test_the_learned_factor_is_the_middle_ratio():
+    # Measured divided by the formula: 1.25, 1.25 and 2.
+    assert evaluate.learned_factor(ROWS) == 1.25
 
 
 def test_score_has_a_row_per_gpu_and_one_for_all():

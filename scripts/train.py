@@ -1,4 +1,4 @@
-"""Train an XGBoost model to predict writing speed, and score it against the baselines.
+"""Train an XGBoost model to predict writing speed, and score it against the formula.
 
 Run from the project folder, after scripts/combine_runs.py:
     uv run --group train python scripts/train.py
@@ -19,7 +19,7 @@ Add --save to also keep a model trained on every run, for 'localtune predict' on
 # one fixed speed for every computer. That makes it part of this model, not of the yardstick:
 # "Formula" in the scores is still the plain formula, unchanged.
 #
-# It is scored exactly like the baselines (evaluate.py): each GPU in turn is left out, the model
+# It is scored exactly like the formula (evaluate.py): each GPU in turn is left out, the model
 # is trained on every other GPU's runs, and it predicts the one left out.
 
 import math
@@ -32,7 +32,6 @@ from evaluate import (
     RUNS_FILE,
     TARGET,
     Method,
-    calibrated,
     console,
     formula,
     load_usable,
@@ -124,7 +123,7 @@ def main() -> None:
     if not rows:
         console.print("No usable runs with an estimate to train on yet.")
         sys.exit(1)
-    methods: dict[str, Method] = {"Formula": formula, "Calibrated": calibrated, "XGBoost": xgboost}
+    methods: dict[str, Method] = {"Formula": formula, "XGBoost": xgboost}
     table = Table(title="Writing speed (decode tok/s), each GPU predicted without its own runs")
     table.add_column("GPU")
     for column in ["Runs"] + [f"{name} error" for name in methods]:
