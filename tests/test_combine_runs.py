@@ -48,6 +48,14 @@ def test_failed_and_busy_runs_are_kept_but_marked(tmp_path):
     assert reasons[4] == "busy: 5.0 GB of GPU memory in use at the start"
 
 
+def test_a_run_with_more_threads_than_the_computer_allows_is_marked(tmp_path):
+    folder = tmp_path / "rtxa2000" / "results.jsonl"
+    save_result(make_run(settings=SETTINGS.model_copy(update={"threads": 16})), folder)
+    save_result(make_run(settings=SETTINGS.model_copy(update={"threads": 32})), folder)
+    reasons = [row["skip_reason"] for row in combine_runs.combine(tmp_path)]
+    assert reasons == ["", "too many threads: 32 on a computer that allows 16"]
+
+
 def test_the_end_of_the_run_before_doesnt_mark_a_run_busy(tmp_path):
     # Saved by older versions: the GPU looked 33% busy with nothing else holding its memory.
     background = Background(gpu_utilization_pct=33, gpu_vram_used_gb=0.0, cpu_load_pct=2)
