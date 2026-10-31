@@ -30,7 +30,9 @@ OUT_FILE = ROOT / "data" / "all_runs.csv"
 # matter later: they show where a model stops fitting. Another program on the GPU is judged by
 # the memory it holds, not by how busy the GPU looked: runs saved before localtune took the
 # quietest of its readings often caught the end of the run before them, and any program using
-# the GPU holds some of its memory.
+# the GPU holds some of its memory. A run told to use more CPU threads than the computer allows
+# makes the threads wait on each other, which can make it many times slower; that's a mistake in
+# how it was started, not something about the computer, so it's left out too.
 
 
 def skip_reason(run: RunResult) -> str:
@@ -43,6 +45,9 @@ def skip_reason(run: RunResult) -> str:
         return f"busy: the CPU was {b.cpu_load_pct:.0f}% busy"
     if run.gpu and run.gpu.baseline_vram_gb >= OTHER_VRAM_GB:
         return f"busy: {run.gpu.baseline_vram_gb:.1f} GB of GPU memory in use at the start"
+    threads, allowed = run.settings.threads, run.hardware.cpu_threads
+    if threads and allowed and threads > allowed:
+        return f"too many threads: {threads} on a computer that allows {allowed}"
     return ""
 
 

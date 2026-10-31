@@ -106,13 +106,18 @@ once() {
 }
 
 # The threads this machine allows: its CPUs, capped by the container's CPU limit if it has one.
+# Newer containers (cgroup v2) keep the limit in cpu.max, older ones (v1) in two cpu.cfs files.
 ALL=$(nproc)
+QUOTA=max
 if [ -r /sys/fs/cgroup/cpu.max ]; then
   read -r QUOTA PERIOD < /sys/fs/cgroup/cpu.max
-  if [ "$QUOTA" != "max" ]; then
-    LIMIT=$(( (QUOTA + PERIOD - 1) / PERIOD ))
-    [ "$LIMIT" -lt "$ALL" ] && ALL=$LIMIT
-  fi
+elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+  QUOTA=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
+  PERIOD=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+fi
+if [ "$QUOTA" != "max" ] && [ "$QUOTA" -gt 0 ] 2>/dev/null; then
+  LIMIT=$(( (QUOTA + PERIOD - 1) / PERIOD ))
+  [ "$LIMIT" -lt "$ALL" ] && ALL=$LIMIT
 fi
 HALF=$(( ALL > 1 ? ALL / 2 : 1 ))
 
