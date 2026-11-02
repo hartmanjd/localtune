@@ -7,17 +7,25 @@
 
 $ErrorActionPreference = "Stop"
 
-# The same 7 models as the quick sweep on the rented GPUs (rental_setup.sh), so every computer
-# is measured on the same work. The sizes are each download in GB, for the disk space check.
-$Models = [ordered]@{
-    "llama3.1:8b"    = 4.9
-    "qwen3:14b"      = 9.3
-    "qwen3:14b-q8_0" = 15.7
-    "gpt-oss:20b"    = 13.8
-    "gemma4:26b"     = 18.0
-    "qwen3:30b"      = 18.6
-    "qwen3.8:27b"    = 17.3
+# The 7 models of the quick sweep on the rented GPUs (rental_setup.sh), so every computer is
+# measured on the same work, and 4 the rented GPUs never ran, to check the speed guesses on
+# models they weren't trained on. The sizes are each download in GB. Only the models that fit
+# on this PC's graphics card are run (see step 1), so a small card never has to push a model
+# through the PC's RAM, which can make the whole PC slow for hours.
+$AllModels = [ordered]@{
+    "qwen3:0.6b"        = 0.5
+    "llama3.2:3b"       = 2.0
+    "llama3.1:8b"       = 4.9
+    "qwen3:8b"          = 5.2
+    "qwen3:14b"         = 9.3
+    "gpt-oss:20b"       = 13.8
+    "mistral-small:24b" = 14.3
+    "qwen3:14b-q8_0"    = 15.7
+    "gemma4:26b"        = 18.0
+    "qwen3:30b"         = 18.6
+    "qwen3.8:27b"       = 17.3
 }
+$KeepFreeGB = 1.5
 
 function Step($text) { Write-Host ""; Write-Host "== $text ==" -ForegroundColor Magenta }
 function Say($text) { Write-Host $text -ForegroundColor Yellow }
@@ -38,7 +46,7 @@ Add-Type -Namespace LocalTune -Name Power -MemberDefinition @"
 
 Write-Host "localtune friend setup" -ForegroundColor Cyan
 Write-Host "This measures how fast AI models run on this PC. It takes a few hours, most of it"
-Write-Host "downloading about 100 GB of models and then running them one by one."
+Write-Host "downloading up to about 120 GB of models and then running them one by one."
 Write-Host "Please close games and other programs that use the graphics card, and leave the PC on."
 Write-Host "You can stop at any time by closing this window; run it again to carry on."
 Read-Host "Press Enter to start"
@@ -48,6 +56,7 @@ Read-Host "Press Enter to start"
 Step "1/7 Check for an NVIDIA graphics card"
 if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+    $CardGB = [double](@(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits)[0]) / 1024
 } elseif (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -like "*NVIDIA*" }) {
     Start-Process "https://www.nvidia.com/en-us/drivers/"
     Stop-Here "This PC has an NVIDIA card, but its driver isn't installed. Install the driver from the page that just opened (or the NVIDIA App)."
@@ -57,6 +66,14 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     Write-Host "Nothing was installed. Thanks for offering to help anyway!"
     exit 1
 }
+
+# The models that fit on the card with room to spare (the same 1.5 GB localtune's estimate
+# keeps free for the screen and the conversation).
+$Models = [ordered]@{}
+foreach ($name in $AllModels.Keys) {
+    if ($AllModels[$name] -le $CardGB - $KeepFreeGB) { $Models[$name] = $AllModels[$name] }
+}
+Write-Host "This card has $([math]::Round($CardGB)) GB, so it runs $($Models.Count) of the $($AllModels.Count) models."
 
 # What this script adds to the PC is noted in localtune's folder as it goes: whether it installed
 # uv, and which models it downloaded (models that were already on the PC aren't listed). The
@@ -159,7 +176,7 @@ Write-Host "  $copy" -ForegroundColor Cyan
 Write-Host "It holds the speed measurements and this PC's hardware (graphics card, CPU, RAM)."
 Start-Process explorer.exe "/select,`"$copy`""
 
-# Clean-up: the models take about 100 GB, so the last step offers to remove them and localtune
+# Clean-up: the models take up to about 120 GB, so the last step offers to remove them and localtune
 # again. The results file on the Desktop stays. Saying no leaves everything in place, and
 # friend_cleanup.bat in this folder does the same clean-up any time later.
 Write-Host ""
