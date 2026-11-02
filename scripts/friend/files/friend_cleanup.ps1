@@ -1,6 +1,6 @@
 # Removes what friend_setup.ps1 added to this PC, once the results are sent: the models it
 # downloaded, localtune with llama.cpp and its saved data, and uv if the setup installed it.
-# Started by double-clicking friend_cleanup.bat, or by friend_setup.ps1 at the end when the
+# Started by double-clicking "2 Remove when done.bat", or by friend_setup.ps1 at the end when the
 # friend says yes. It only removes what the setup noted it added (in localtune's folder), so
 # models and tools that were on the PC before stay. Ollama stays too: the friend installed it
 # themselves, and it can be uninstalled like any app (Settings, Apps). The results file on the

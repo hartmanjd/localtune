@@ -15,10 +15,11 @@ What you need
 What to do
 ----------
 1. Unzip this folder: right-click the zip, choose "Extract All".
-2. Double-click friend_setup.bat in the unzipped folder.
+2. Double-click "1 Start here" in the unzipped folder.
+   (The "files" folder holds what it installs. There's no need to open it.)
    If Windows says "Windows protected your PC", click "More info", then "Run anyway".
 3. If it asks you to install Ollama (the program that downloads the models), install
-   it from the page it opens, then double-click friend_setup.bat again.
+   it from the page it opens, then double-click "1 Start here" again.
 4. Leave the PC alone until it says "All done". Please close games, videos and
    video calls while it runs.
 5. Send Justin the file it puts on your Desktop:
@@ -35,13 +36,13 @@ What it does, step by step
 7. Runs each model and measures how fast it writes.
 
 If the screen ever shows a GPU memory bar and seems stuck, press Enter to carry on.
-You can close the window at any time. Double-click friend_setup.bat again and it
+You can close the window at any time. Double-click "1 Start here" again and it
 carries on where it stopped.
 
 Removing it afterwards
 ----------------------
 At the end it asks whether to remove the downloaded models and localtune. Type Y to
 remove them. Your results file on the Desktop stays.
-To remove them later instead, double-click friend_cleanup.bat.
+To remove them later instead, double-click "2 Remove when done".
 It only removes what the setup added: models you had before, and Ollama itself, stay.
 Ollama can be uninstalled like any other app (Settings > Apps).

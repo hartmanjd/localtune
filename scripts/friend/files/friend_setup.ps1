@@ -2,7 +2,7 @@
 # leaves the results on their Desktop to send back. It does every step of the friend guide in
 # one go: install uv, install localtune from the wheel next to this script, check for an NVIDIA
 # card and Ollama, download the models, install llama.cpp, run the quick sweep. Started by
-# double-clicking friend_setup.bat in the same folder. Safe to run again: finished steps are
+# double-clicking "1 Start here.bat" in the folder above this one. Safe to run again: finished steps are
 # skipped and the sweep carries on where it stopped.
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +32,7 @@ function Say($text) { Write-Host $text -ForegroundColor Yellow }
 function Stop-Here($text) {
     Write-Host ""
     Write-Host $text -ForegroundColor Red
-    Write-Host "When that's done, double-click friend_setup.bat again. It picks up where it stopped."
+    Write-Host "When that's done, double-click '1 Start here' again. It picks up where it stopped."
     exit 1
 }
 
@@ -100,10 +100,10 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 # Step 3: localtune itself, from the wheel file Justin sent along with this script. Nothing is
 # downloaded from PyPI. The newest wheel wins if there are several.
 Step "3/7 Install localtune"
-$Wheel = Get-ChildItem -Path $PSScriptRoot, (Join-Path $PSScriptRoot "dist") -Filter "localtune-*.whl" -ErrorAction SilentlyContinue |
+$Wheel = Get-ChildItem -Path $PSScriptRoot, (Split-Path $PSScriptRoot) -Filter "localtune-*.whl" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $Wheel) {
-    Stop-Here "The localtune file (localtune-...whl) isn't in this folder. Unzip everything Justin sent into one folder, and run friend_setup.bat from there."
+    Stop-Here "The localtune file (localtune-...whl) isn't in this folder. Unzip everything Justin sent into one folder, and double-click '1 Start here' from there."
 }
 uv tool install --force $Wheel.FullName
 if ($LASTEXITCODE -ne 0) { Stop-Here "localtune didn't install. Send Justin a screenshot of this window." }
@@ -178,11 +178,11 @@ Start-Process explorer.exe "/select,`"$copy`""
 
 # Clean-up: the models take up to about 120 GB, so the last step offers to remove them and localtune
 # again. The results file on the Desktop stays. Saying no leaves everything in place, and
-# friend_cleanup.bat in this folder does the same clean-up any time later.
+# "2 Remove when done.bat" does the same clean-up any time later.
 Write-Host ""
 $answer = Read-Host "Remove the downloaded models and localtune from this PC now? Your results file stays on the Desktop. (Y/N)"
 if ($answer -match "^\s*y") {
     & (Join-Path $PSScriptRoot "friend_cleanup.ps1") -Yes
 } else {
-    Write-Host "Everything is left in place. To remove it later, double-click friend_cleanup.bat in this folder."
+    Write-Host "Everything is left in place. To remove it later, double-click '2 Remove when done'."
 }
