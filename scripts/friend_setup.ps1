@@ -58,12 +58,21 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     exit 1
 }
 
+# What this script adds to the PC is noted in localtune's folder as it goes: whether it installed
+# uv, and which models it downloaded (models that were already on the PC aren't listed). The
+# clean-up at the end (friend_cleanup.ps1) removes only what is listed there.
+$LocaltuneHome = if ($env:LOCALTUNE_HOME) { $env:LOCALTUNE_HOME } else { Join-Path $env:USERPROFILE ".localtune" }
+New-Item -ItemType Directory -Force $LocaltuneHome | Out-Null
+$Downloaded = Join-Path $LocaltuneHome "friend-downloaded-models.txt"
+$InstalledUv = Join-Path $LocaltuneHome "friend-installed-uv.txt"
+
 # Step 2: uv, the tool that installs localtune and the Python it runs on. It lands in the
 # user's own folder, so no admin rights are needed.
 Step "2/7 Install uv"
 $UvBin = Join-Path $env:USERPROFILE ".local\bin"
 $env:Path = "$UvBin;$env:Path"
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    Set-Content $InstalledUv "yes"
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     $env:Path = "$UvBin;$env:Path"
 }
@@ -120,6 +129,7 @@ if ($needGB -and $freeGB -lt $needGB + 10) {
 }
 foreach ($model in $Models.Keys) {
     Write-Host "-- $model"
+    if ($missing -contains $model) { Add-Content $Downloaded $model }
     & $OllamaExe pull $model
     if ($LASTEXITCODE -ne 0) { Stop-Here "Downloading $model failed. Check the internet connection." }
 }
@@ -137,7 +147,7 @@ Step "7/7 Benchmark every model (about 1 to 3 hours)"
 localtune sweep @($Models.Keys) --resume
 
 # The results: copied to the Desktop under this PC's name, so Justin can tell the files apart.
-$results = Join-Path $(if ($env:LOCALTUNE_HOME) { $env:LOCALTUNE_HOME } else { Join-Path $env:USERPROFILE ".localtune" }) "results.jsonl"
+$results = Join-Path $LocaltuneHome "results.jsonl"
 if (-not (Test-Path $results)) { Stop-Here "No results were saved. Send Justin a screenshot of this window." }
 $desktop = [Environment]::GetFolderPath("Desktop")
 $copy = Join-Path $desktop "localtune-results-$env:COMPUTERNAME.jsonl"
@@ -147,5 +157,15 @@ Write-Host "All done, thank you!" -ForegroundColor Green
 Write-Host "Please send Justin this file from your Desktop:"
 Write-Host "  $copy" -ForegroundColor Cyan
 Write-Host "It holds the speed measurements and this PC's hardware (graphics card, CPU, RAM)."
-Write-Host "To remove localtune later, open PowerShell and type: uv tool uninstall localtune"
 Start-Process explorer.exe "/select,`"$copy`""
+
+# Clean-up: the models take about 100 GB, so the last step offers to remove them and localtune
+# again. The results file on the Desktop stays. Saying no leaves everything in place, and
+# friend_cleanup.bat in this folder does the same clean-up any time later.
+Write-Host ""
+$answer = Read-Host "Remove the downloaded models and localtune from this PC now? Your results file stays on the Desktop. (Y/N)"
+if ($answer -match "^\s*y") {
+    & (Join-Path $PSScriptRoot "friend_cleanup.ps1") -Yes
+} else {
+    Write-Host "Everything is left in place. To remove it later, double-click friend_cleanup.bat in this folder."
+}
