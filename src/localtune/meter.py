@@ -48,11 +48,23 @@ def gauge(sample: GpuSample, total_gb: float) -> Text:
     return text
 
 
-def screen(sample: GpuSample, total_gb: float, programs: list[str]) -> Group:
+# A screen taller than the terminal window gets its bottom cut off, and with it the line that
+# says to press Enter, so the list of programs is shortened to what fits ("...and 18 more").
+
+OTHER_LINES = 11
+
+
+def screen(
+    sample: GpuSample, total_gb: float, programs: list[str], height: int | None = None
+) -> Group:
     lines = [gauge(sample, total_gb), Text("")]
     if programs:
+        room = len(programs) if height is None else max(3, height - OTHER_LINES)
+        shown = programs if len(programs) <= room else programs[: room - 1]
         lines.append(Text("  Using the GPU:"))
-        lines += [Text(f"    • {program}") for program in programs]
+        lines += [Text(f"    • {program}") for program in shown]
+        if len(shown) < len(programs):
+            lines.append(Text(f"    ...and {len(programs) - len(shown)} more", style="dim"))
         lines.append(Text(""))
     lines += [
         Text("  For the best results, please close any programs you don't need.", style="dim"),
@@ -154,7 +166,7 @@ def wait_for_room(
                 return "free"
             if pressed():
                 return "enter"
-            live.update(screen(sample, total_gb, programs))
+            live.update(screen(sample, total_gb, programs, console.height))
             time.sleep(tick_s)
             if time.monotonic() - last_read >= read_every_s:
                 sample, last_read = read() or sample, time.monotonic()

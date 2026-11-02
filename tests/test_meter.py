@@ -38,6 +38,16 @@ def test_the_hint_says_when_the_benchmark_starts():
     assert "\n  Press Enter to start now.\n" in text
 
 
+def test_a_long_list_of_programs_is_cut_so_press_enter_stays_on_screen():
+    programs = [f"program{i}.exe  (memory not reported)" for i in range(26)]
+    console = Console(file=io.StringIO(), width=300)
+    console.print(screen(reading(2.2), 16.0, programs, height=30))
+    lines = console.file.getvalue().splitlines()
+    assert len(lines) <= 30
+    assert "...and 8 more" in console.file.getvalue()
+    assert lines[-1].strip() == "Press Enter to start now."
+
+
 def test_the_gpu_counts_as_busy_from_2_gb_or_a_busy_gpu():
     assert not is_busy(reading(0.8))
     assert is_busy(reading(2.5))
