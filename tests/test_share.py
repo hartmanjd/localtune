@@ -132,3 +132,7 @@ def test_each_run_is_shared_once(server):
     result = runner.invoke(cli.app, ["share", "--to", server, "--yes"])
     assert "No new runs to share." in result.output
     assert len(Collector.received) == 1
+
+
+def test_share_is_left_out_of_the_command_list():
+    assert " share " not in runner.invoke(cli.app, ["--help"]).output

@@ -1932,10 +1932,12 @@ def settings_summary(settings: RunSettings) -> str:
 
 # "localtune share": offers the saved runs not shared yet to localtune's public dataset
 # (share.py). It writes exactly what would be sent to a file, shows a summary and one run in
-# full, and sends only after a yes. Nothing is sent without an address to send to.
+# full, and sends only after a yes. Nothing is sent without an address to send to. Until
+# localtune's server for the dataset is running there is no address built in, so the command is
+# left out of the command list; it still works with --to.
 
 
-@app.command()
+@app.command(hidden=True)
 def share(
     to: str | None = typer.Option(
         None, help="The address to send the runs to (or set LOCALTUNE_SHARE_URL)."
