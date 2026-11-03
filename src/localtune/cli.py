@@ -12,6 +12,7 @@
 # answers.
 
 import csv
+import shutil
 import sys
 import time
 import zipfile
@@ -55,7 +56,12 @@ from localtune.install import (
 )
 from localtune.meter import gpu_programs, is_busy, wait_for_room
 from localtune.models import find_model
-from localtune.ollama_models import downloaded_models, find_ollama_model, manifest_path
+from localtune.ollama_models import (
+    downloaded_models,
+    find_ollama_model,
+    manifest_path,
+    models_dir,
+)
 from localtune.ollama_pull import (
     PullError,
     UnknownModel,
@@ -102,6 +108,21 @@ from localtune.runners.llamacpp import (
 )
 from localtune.runners.web_api import ApiOptions, find_server, pick_model, run_web_api
 from localtune.runners.web_api import requested_settings as web_api_settings
+from localtune.samples import (
+    AskError,
+    SampleAnswer,
+    can_think,
+    delete,
+    done_pairs,
+    load_answers,
+    load_questions,
+    models_that_fit,
+    samples_file,
+    save_answer,
+    score,
+    unload,
+)
+from localtune.samples import ask as ask_sample
 from localtune.share import (
     ShareError,
     mark_shared,
@@ -1832,6 +1853,126 @@ def show_tune_quality(
         )
         command = f"  localtune run {command_for(f16)} {run_flags(f16)}"
         console.print(command, markup=False, highlight=False, soft_wrap=True)
+    return True
+
+
+# "localtune samples": puts the same 20 questions to many models, one after another, and saves
+# their answers (samples.py), for the site's side-by-side comparison. It's made to run
+# overnight: it downloads each model it needs, asks, deletes what it downloaded, and moves on,
+# keeping the computer awake. Stopped halfway, the same command carries on where it left off.
+
+
+@app.command()
+def samples(
+    models: Annotated[
+        list[str] | None,
+        typer.Argument(help="Models to ask. Leave out for the most popular ones that fit this PC."),
+    ] = None,
+    top: int = typer.Option(40, help="How many of the most popular models, if none are named."),
+    keep: bool = typer.Option(False, "--keep", help="Keep the models it downloads."),
+) -> None:
+    """Ask many models the same 20 questions and save their answers to compare."""
+    url = ollama_url()
+    if not is_running(url):
+        program = find_ollama()
+        if program is None:
+            console.print("This needs Ollama. Install it from https://ollama.com/download first.")
+            raise typer.Exit(1)
+        with console.status("Starting Ollama..."):
+            if not start_ollama(program, url):
+                console.print("Ollama didn't start. Open the Ollama app, then run this again.")
+                raise typer.Exit(1)
+    if not models:
+        hardware = detect_hardware()
+        vram = hardware.gpus[0].vram_gb if hardware.gpus else 0
+        memory = vram + (hardware.ram_gb or 0) * 0.5
+        # Smallest first, so a night covers as many models as it can; the biggest go last.
+        picked = sorted(models_that_fit(memory, top), key=lambda m: m.files[0].size_bytes)
+        models = [m.name for m in picked]
+    questions = load_questions()
+    done = done_pairs(load_answers())
+    left = [m for m in models if any((m, q.id) not in done for q in questions)]
+    console.print(
+        f"Asking {len(questions)} questions to {len(models)} models "
+        f"({len(models) - len(left)} already done). It downloads each model it needs and "
+        "deletes it again afterwards. Leave it running; Ctrl+C stops it, and running the "
+        "same command again carries on."
+    )
+    try:
+        with keep_awake():
+            for number, model in enumerate(left, start=len(models) - len(left) + 1):
+                ask_model(url, model, questions, done, keep, f"{number} of {len(models)}")
+    except KeyboardInterrupt:
+        console.print("Stopped. The answers so far are saved; run the same command to carry on.")
+        raise typer.Exit(1) from None
+    console.print(f"Done. Answers saved to {samples_file()}")
+
+
+def ask_model(url, model: str, questions, done: set, keep: bool, place: str) -> None:
+    downloaded_here = False
+    if find_ollama_model(model) is None:
+        if not download_for_samples(url, model, place):
+            return
+        downloaded_here = True
+    thinks = can_think(url, model)
+    answers: list[SampleAnswer] = []
+    started = time.monotonic()
+    try:
+        for q in questions:
+            if (model, q.id) in done:
+                continue
+            with console.status(f"{place}: {model}, question {q.level} of {len(questions)}"):
+                answer = ask_sample(url, model, q, thinks)
+            save_answer(answer)
+            answers.append(answer)
+    except AskError as error:
+        console.print(f"{place}: {model} stopped answering ({error}); moving on.")
+    finally:
+        unload(url, model)
+        if downloaded_here and not keep:
+            try:
+                delete(url, model)
+            except AskError:
+                console.print(f"Couldn't delete {model}; remove it with: ollama rm {model}")
+    right, checked, best = score(answers)
+    minutes = (time.monotonic() - started) / 60
+    console.print(
+        f"{place}: {model}: {right} of {checked} right"
+        + (f", best level {best}" if best else "")
+        + f", {minutes:.0f} min"
+    )
+
+
+def download_for_samples(url: str, model: str, place: str) -> bool:
+    try:
+        size = download_size(model)
+    except UnknownModel:
+        console.print(f"{place}: skipping {model}, Ollama doesn't have it.")
+        return False
+    root = models_dir()
+    while not root.exists() and root.parent != root:
+        root = root.parent
+    free = shutil.disk_usage(root).free
+    if size and free < size + 5e9:
+        console.print(f"{place}: skipping {model}, not enough free disk ({free / 1e9:.0f} GB).")
+        return False
+    columns = (
+        TextColumn("{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TimeRemainingColumn(),
+    )
+    with Progress(*columns, console=console, transient=True) as progress:
+        task = progress.add_task(f"{place}: downloading {model}", total=size or None)
+
+        def update(status: str, done: int, total: int) -> None:
+            progress.update(task, completed=done, total=max(total, size or 0))
+
+        try:
+            pull(model, url, update)
+        except PullError as error:
+            console.print(f"{place}: downloading {model} failed ({error}); moving on.")
+            return False
     return True
 
 
