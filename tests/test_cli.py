@@ -10,7 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from localtune import cli, tune
+from localtune import __version__, cli, tune
 from localtune.background import Background
 from localtune.doctor import Check
 from localtune.gguf import ModelLayout
@@ -1216,3 +1216,9 @@ def test_quality_reads_chunks_as_long_as_a_uses_conversation(monkeypatch, tmp_pa
     assert "8,192-token chunks" in result.output
     result = runner.invoke(cli.app, ["quality", str(model), "--use", "poems"])
     assert result.exit_code == 1
+
+
+def test_version_prints_the_version():
+    result = runner.invoke(cli.app, ["--version"])
+    assert result.exit_code == 0
+    assert result.output.strip() == f"localtune {__version__}"

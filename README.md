@@ -15,6 +15,65 @@ Each run measures:
 | Energy Wh | Electricity the GPU used during the run |
 | Cost | That energy times an electricity price |
 
+## Install
+
+localtune needs Python 3.10 or newer and, for benchmarks, an NVIDIA graphics card. It runs on
+Windows and Linux.
+
+```
+pip install localtune
+```
+
+or, with [uv](https://docs.astral.sh/uv/):
+
+```
+uv tool install localtune
+```
+
+## Quick start
+
+Check that your computer is ready. localtune offers to install llama.cpp if it's missing:
+
+```
+localtune doctor
+```
+
+See whether a model fits on your GPU and how fast it should write, before downloading it:
+
+```
+localtune predict qwen3:14b
+```
+
+Benchmark a model you have in [Ollama](https://ollama.com) (or a `.gguf` file):
+
+```
+localtune run qwen3:14b
+```
+
+Find the fastest llama.cpp settings for it on your computer, and get a ready-to-use
+`llama-server` command:
+
+```
+localtune tune qwen3:14b
+```
+
+Benchmark every model you have in Ollama, one after another:
+
+```
+localtune sweep
+```
+
+See your saved runs, or save them all to a CSV file:
+
+```
+localtune results
+localtune results --csv runs.csv
+```
+
+Run `localtune` on its own to list every command, and add `--help` to any command for its
+options. Runs are saved in `~/.localtune` (set `LOCALTUNE_HOME` to use another folder) and
+stay on your computer.
+
 ## Data sources
 
 Electricity cost uses the most local price localtune has: your zip code, then your state or

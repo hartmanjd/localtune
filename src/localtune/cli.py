@@ -141,15 +141,27 @@ app = typer.Typer()
 console = Console()
 
 
-# "localtune" on its own plays the logo (animations.py) and lists the commands. While the
-# commands below work, a small loading animation runs beside what they're doing. The commands
-# that benchmark keep the computer from going to sleep until they end (awake.py).
+# "localtune" on its own plays the logo (animations.py) and lists the commands, and
+# "localtune --version" prints the version. While the commands below work, a small loading
+# animation runs beside what they're doing. The commands that benchmark keep the computer from
+# going to sleep until they end (awake.py).
 
 BENCHMARK_COMMANDS = {"run", "tune", "sweep"}
 
 
+def show_version(value: bool) -> None:
+    if value:
+        console.print(f"localtune {__version__}", markup=False, highlight=False)
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", callback=show_version, is_eager=True, help="Show the version and exit."
+    ),
+) -> None:
     """Benchmark local LLMs on your own hardware.
 
     Set LOCALTUNE_NO_ANIMATION=1 to turn off the logo and loading animations.
@@ -1920,10 +1932,12 @@ def settings_summary(settings: RunSettings) -> str:
 
 # "localtune share": offers the saved runs not shared yet to localtune's public dataset
 # (share.py). It writes exactly what would be sent to a file, shows a summary and one run in
-# full, and sends only after a yes. Nothing is sent without an address to send to.
+# full, and sends only after a yes. Nothing is sent without an address to send to. Until
+# localtune's server for the dataset is running there is no address built in, so the command is
+# left out of the command list; it still works with --to.
 
 
-@app.command()
+@app.command(hidden=True)
 def share(
     to: str | None = typer.Option(
         None, help="The address to send the runs to (or set LOCALTUNE_SHARE_URL)."
