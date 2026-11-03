@@ -1,8 +1,9 @@
-# Tests for speed_model.py: the run 'localtune predict' describes to the trained model, and the
-# model's guess showing up only when a saved model is there. They use the real model and GPU
-# tables, and a model trained on made-up runs where flash attention makes writing 1.5x faster
-# than the formula (tests/test_train.py), so its guess for predict's usual settings is about
-# 1.5x the estimate: 40 tok/s for qwen3:14b on an RTX 4070 Ti SUPER becomes about 60.
+# Tests for speed_model.py: the run 'localtune predict' describes to the trained model, the
+# model that ships with localtune, and a model saved in localtune's folder taking its place.
+# They use the real model and GPU tables, and a model trained on made-up runs where flash
+# attention makes writing 1.5x faster than the formula (tests/test_train.py), so its guess for
+# predict's usual settings is about 1.5x the estimate: 40 tok/s for qwen3:14b on an RTX 4070 Ti
+# SUPER becomes about 60.
 
 import sys
 from pathlib import Path
@@ -11,13 +12,19 @@ import pytest
 from typer.testing import CliRunner
 
 from localtune import cli
-from localtune.features import worked_out
+from localtune.features import FEATURES, worked_out
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
 from localtune.predict import predict
 from localtune.results import model_facts
-from localtune.speed_model import planned_run, split, trained_estimate
+from localtune.speed_model import (
+    bundled_model_file,
+    load_model,
+    planned_run,
+    split,
+    trained_estimate,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_train import made_up_runs, train  # noqa: E402
@@ -66,15 +73,20 @@ def test_a_model_too_big_for_the_gpu_is_split():
     assert split(dense, dense.file_bytes / 2) == {"gpu_layers": dense.layers // 2}
 
 
-def test_no_saved_model_means_no_guess(tmp_path, monkeypatch):
+def test_the_shipped_model_matches_this_version(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
-    assert trained_estimate(planned("qwen3:14b", 512, 256)) is None
+    assert bundled_model_file().exists()
+    assert load_model().feature_names == FEATURES
+
+
+def test_without_a_saved_model_the_shipped_one_guesses(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
+    assert 30 < trained_estimate(planned("qwen3:14b", 512, 256)) < 100
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
-    assert "Trained model" not in result.output
+    assert "Trained model" in result.output
 
 
 def test_predict_shows_the_saved_model_beside_the_formula(tmp_path, monkeypatch):
-    pytest.importorskip("xgboost")
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
     train.save(made_up_runs())
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
