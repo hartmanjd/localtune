@@ -15,6 +15,21 @@ Each run measures:
 | Energy Wh | Electricity the GPU used during the run |
 | Cost | That energy times an electricity price |
 
+## Install
+
+localtune needs Python 3.10 or newer and, for benchmarks, an NVIDIA graphics card. It runs on
+Windows and Linux.
+
+```
+pip install localtune
+```
+
+or, with [uv](https://docs.astral.sh/uv/):
+
+```
+uv tool install localtune
+```
+
 ## Data sources
 
 Electricity cost uses the most local price localtune has: your zip code, then your state or
