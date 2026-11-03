@@ -59,6 +59,11 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "src/localtune/__init__.py"
 
+# The source download on PyPI holds only what installing localtune needs. The run data, the
+# scripts and the tests stay in the project on GitHub.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "README.md", "LICENSE"]
+
 # Tools for people working on localtune, not for people using it: pytest runs the tests in
 # tests/, and ruff keeps the code free of common mistakes and consistently formatted.
 # The same checks run automatically on GitHub (see .github/workflows/ci.yml).
