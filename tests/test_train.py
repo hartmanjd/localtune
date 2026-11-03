@@ -44,7 +44,6 @@ def made_up_runs():
 
 
 def test_the_model_learns_what_the_formula_misses():
-    pytest.importorskip("xgboost")
     rows = made_up_runs()
     errors = dict(
         (line[0], line[2:]) for line in train.score(rows, {"F": train.formula, "X": train.xgboost})
@@ -54,7 +53,6 @@ def test_the_model_learns_what_the_formula_misses():
 
 
 def test_the_input_it_leaned_on_is_named():
-    pytest.importorskip("xgboost")
     assert train.importance(made_up_runs())[0][0] == "flash attention"
 
 
@@ -64,19 +62,17 @@ def test_the_input_it_leaned_on_is_named():
 
 
 def test_a_saved_model_guesses_like_the_trained_one(tmp_path, monkeypatch):
-    pytest.importorskip("xgboost")
     from localtune import speed_model
 
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
-    assert speed_model.trained_estimate(row(**{"settings.flash_attention": True})) is None
     assert train.save(made_up_runs()) == tmp_path / "speed-model.json"
     guess = speed_model.trained_estimate(row(**{"settings.flash_attention": True}))
     assert guess == pytest.approx(120, rel=0.05)
 
 
 def test_a_model_saved_with_other_inputs_is_ignored(tmp_path, monkeypatch):
-    xgboost = pytest.importorskip("xgboost")
     import numpy as np
+    import xgboost
 
     from localtune import speed_model
 

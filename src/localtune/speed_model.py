@@ -1,18 +1,21 @@
-"""Writing-speed guesses from the trained prediction model, when one is on this computer."""
+"""Writing-speed guesses from the trained prediction model that comes with localtune."""
 
-# The trained prediction model (scripts/train.py) is kept as one file in localtune's own folder
-# (results.home_dir), never in the project, so it is only on the computers it was copied to.
-# Where it isn't, or where XGBoost isn't installed (it's only in the train group, not in the
-# normal install), nothing here does anything and 'localtune predict' shows the formula alone.
+# The trained prediction model (scripts/train.py) ships inside the package, in
+# src/localtune/data/speed-model.json, so everyone who installs localtune gets its guesses.
+# A model saved in localtune's own folder (results.home_dir) is used instead when there is one,
+# so a newly trained model can be tried on one computer before it ships.
 #
 # The model learned how many times faster or slower than the formula (predict.py) real runs
 # were, from the inputs in features.py. It starts from the formula worked out with the
 # computer's own RAM speed (START, predict.estimate_for). So a guess is that estimate times the
 # learned factor, for a row of run data shaped like the ones it was trained on. A model file
 # saved with different inputs than this version of localtune works out is ignored, because its
-# guesses would mean nothing.
+# guesses would mean nothing. XGBoost is loaded only when a guess is asked for, so the other
+# commands start as fast as before. Where it can't load (on a Mac without the OpenMP library it
+# needs, from 'brew install libomp'), there is no guess and 'localtune predict' shows the formula.
 
 import math
+from importlib.resources import files
 from pathlib import Path
 
 from localtune.features import FEATURES, inputs, number
@@ -30,13 +33,17 @@ def model_file() -> Path:
     return home_dir() / "speed-model.json"
 
 
+def bundled_model_file() -> Path:
+    return Path(str(files("localtune") / "data" / "speed-model.json"))
+
+
 def load_model():
-    path = model_file()
+    path = model_file() if model_file().exists() else bundled_model_file()
     if not path.exists():
         return None
     try:
         import xgboost
-    except ImportError:
+    except Exception:
         return None
     model = xgboost.Booster()
     model.load_model(str(path))
