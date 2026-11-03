@@ -4,7 +4,10 @@
 # Who and what localtune is: the facts shown when someone looks the package up or installs it.
 # "dependencies" are the outside libraries localtune needs to run: pydantic gives every piece
 # of data a fixed, checked shape; typer turns Python functions into terminal commands; rich
-# prints tidy tables and colors in the terminal.
+# prints tidy tables and colors in the terminal; XGBoost and numpy run the trained prediction
+# model that ships with localtune. XGBoost comes in two packages: on Linux and Windows the
+# CPU-only one, a tenth the size of the full one (whose extra size is GPU support localtune
+# doesn't use), and on macOS the full one, which is small there.
 [project]
 name = "localtune"
 dynamic = ["version"]
@@ -15,9 +18,12 @@ license-files = ["LICENSE"]
 authors = [{ name = "Justin Hartman" }]
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=2.2.6",
     "pydantic>=2.14.1",
     "rich>=15.0.0",
     "typer>=0.27.3",
+    "xgboost-cpu>=3.2.0; sys_platform != 'darwin'",
+    "xgboost>=3.2.0; sys_platform == 'darwin'",
 ]
 
 # Creates the "localtune" terminal command when the package is installed, and points it at
@@ -36,18 +42,12 @@ path = "src/localtune/__init__.py"
 
 # Tools for people working on localtune, not for people using it: pytest runs the tests in
 # tests/, and ruff keeps the code free of common mistakes and consistently formatted.
-# The same checks run automatically on GitHub (see .github/workflows/ci.yml). The train group
-# is only for training the prediction model (scripts/train.py): XGBoost and numpy are large,
-# so they stay out of the normal install. The CPU-only XGBoost is enough for a few thousand runs.
+# The same checks run automatically on GitHub (see .github/workflows/ci.yml).
 [dependency-groups]
 dev = [
     "openpyxl>=3.1.5",
     "pytest>=9.1.1",
     "ruff>=0.17.2",
-]
-train = [
-    "numpy>=2.2.6",
-    "xgboost-cpu>=3.2.0",
 ]
 
 [tool.pytest.ini_options]
