@@ -1,8 +1,8 @@
 """Train an XGBoost model to predict writing speed, and score it against the formula.
 
 Run from the project folder, after scripts/combine_runs.py:
-    uv run --group train python scripts/train.py
-Add --save to also keep a model trained on every run, for 'localtune predict' on this computer.
+    uv run python scripts/train.py
+Add --save to also replace the model that ships with localtune with one trained on every run.
 """
 
 # The formula in 'localtune predict' already gets the rough size of a model's writing speed
@@ -40,7 +40,7 @@ from evaluate import (
 from rich.table import Table
 
 from localtune.features import FEATURES, inputs
-from localtune.speed_model import START, model_file
+from localtune.speed_model import START, bundled_model_file, model_file
 
 # The inputs the model sees for each run are worked out in features.py, so that training and
 # 'localtune predict' build them the same way.
@@ -101,9 +101,9 @@ def importance(rows: list[dict], top: int = 10) -> list[tuple[str, float]]:
     return sorted(((name, v / total) for name, v in gains.items()), key=lambda x: -x[1])[:top]
 
 
-# The model 'localtune predict' uses on this computer (speed_model.py): trained on every usable
-# run, saved in localtune's own folder rather than the project, so it stays off GitHub. Saving
-# again replaces it with one trained on the runs there are now.
+# The model 'localtune predict' uses (speed_model.py): trained on every usable run. --save
+# writes it into the package (BUNDLED), so it ships with the next release. Without a path, save
+# writes to localtune's own folder instead, where it is tried on this computer only.
 
 
 def save(rows: list[dict], path: Path | None = None) -> Path:
@@ -144,7 +144,8 @@ def main() -> None:
         "the GPU barely vary, so the model can't learn much about how GPUs differ yet."
     )
     if "--save" in sys.argv[1:]:
-        console.print(f"Saved the model trained on every run to {save(rows)}", markup=False)
+        path = save(rows, bundled_model_file())
+        console.print(f"Saved the model trained on every run to {path}", markup=False)
 
 
 if __name__ == "__main__":
