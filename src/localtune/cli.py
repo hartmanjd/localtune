@@ -141,15 +141,27 @@ app = typer.Typer()
 console = Console()
 
 
-# "localtune" on its own plays the logo (animations.py) and lists the commands. While the
-# commands below work, a small loading animation runs beside what they're doing. The commands
-# that benchmark keep the computer from going to sleep until they end (awake.py).
+# "localtune" on its own plays the logo (animations.py) and lists the commands, and
+# "localtune --version" prints the version. While the commands below work, a small loading
+# animation runs beside what they're doing. The commands that benchmark keep the computer from
+# going to sleep until they end (awake.py).
 
 BENCHMARK_COMMANDS = {"run", "tune", "sweep"}
 
 
+def show_version(value: bool) -> None:
+    if value:
+        console.print(f"localtune {__version__}", markup=False, highlight=False)
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", callback=show_version, is_eager=True, help="Show the version and exit."
+    ),
+) -> None:
     """Benchmark local LLMs on your own hardware.
 
     Set LOCALTUNE_NO_ANIMATION=1 to turn off the logo and loading animations.
