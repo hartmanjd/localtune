@@ -17,6 +17,21 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Justin Hartman" }]
 requires-python = ">=3.10"
+keywords = ["llm", "benchmark", "llama.cpp", "ollama", "gpu", "local ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Benchmark",
+]
 dependencies = [
     "numpy>=2.2.6",
     "pydantic>=2.14.1",
@@ -25,6 +40,10 @@ dependencies = [
     "xgboost-cpu>=3.2.0; sys_platform != 'darwin'",
     "xgboost>=3.2.0; sys_platform == 'darwin'",
 ]
+
+# The links shown on localtune's PyPI page.
+[project.urls]
+Homepage = "https://localtune.io"
 
 # Creates the "localtune" terminal command when the package is installed, and points it at
 # the app in src/localtune/cli.py.
