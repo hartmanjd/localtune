@@ -44,7 +44,8 @@ See whether a model fits on your GPU and how fast it should write, before downlo
 localtune predict qwen3:14b
 ```
 
-Benchmark a model you have in [Ollama](https://ollama.com) (or a `.gguf` file):
+Benchmark any model from [Ollama's library](https://ollama.com/library), or a `.gguf` file.
+A model you don't have yet is downloaded first; Ollama itself doesn't need to be installed:
 
 ```
 localtune run qwen3:14b

@@ -327,24 +327,24 @@ def test_run_with_an_unknown_model(monkeypatch, tmp_path):
 
 
 # A missing Ollama model is offered for download. The download is pretend: "pulled" makes the
-# model appear the way a real download would, and Ollama is treated as installed and running.
+# model appear the way a real download would. Ollama isn't installed, because it isn't needed.
 
 
-def missing_until_pulled(monkeypatch, tmp_path, running=True, installed=True):
+def missing_until_pulled(monkeypatch, tmp_path):
     pulled = []
     model_file = tmp_path / "sha256-abc"
     model_file.write_bytes(b"GGUF")
     monkeypatch.setattr(cli, "can_ask", lambda: True)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: model_file if pulled else None)
-    monkeypatch.setattr(cli, "find_ollama", lambda: "ollama" if installed else None)
-    monkeypatch.setattr(cli, "is_running", lambda url: running)
+    monkeypatch.setattr(cli, "find_ollama", lambda: None)
+    monkeypatch.setattr(cli, "is_running", lambda url: False)
     monkeypatch.setattr(cli, "download_size", lambda name: 9_300_000_000)
 
-    def fake_pull(name, url, progress):
+    def fake_fetch(name, progress):
         progress("Downloading", 9_300_000_000, 9_300_000_000)
         pulled.append(name)
 
-    monkeypatch.setattr(cli, "pull", fake_pull)
+    monkeypatch.setattr(cli, "fetch", fake_fetch)
     return pulled
 
 
@@ -367,25 +367,6 @@ def test_run_stops_when_the_download_is_declined(monkeypatch, tmp_path):
     assert "ollama pull qwen3:14b" in result.output
 
 
-def test_run_starts_ollama_before_downloading(monkeypatch, tmp_path):
-    fake_run(monkeypatch, tmp_path, example_run)
-    pulled = missing_until_pulled(monkeypatch, tmp_path, running=False)
-    started = []
-    monkeypatch.setattr(cli, "start_ollama", lambda program, url: started.append(url) or True)
-    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"], input="\n")
-    assert started and pulled == ["qwen3:14b"]
-    assert result.exit_code == 0
-
-
-def test_run_explains_when_ollama_isnt_installed(monkeypatch, tmp_path):
-    fake_run(monkeypatch, tmp_path, example_run)
-    pulled = missing_until_pulled(monkeypatch, tmp_path, running=False, installed=False)
-    result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="\n")
-    assert "https://ollama.com/download" in result.output
-    assert "Download it now" not in result.output
-    assert pulled == [] and result.exit_code == 1
-
-
 def test_run_catches_a_misspelled_model_before_asking(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     missing_until_pulled(monkeypatch, tmp_path)
@@ -404,10 +385,10 @@ def test_run_explains_a_failed_download(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     missing_until_pulled(monkeypatch, tmp_path)
 
-    def broken(name, url, progress):
+    def broken(name, progress):
         raise cli.PullError("no space left on device")
 
-    monkeypatch.setattr(cli, "pull", broken)
+    monkeypatch.setattr(cli, "fetch", broken)
     result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="\n")
     assert "Downloading qwen3:14b failed: no space left on device" in result.output
     assert result.exit_code == 1
