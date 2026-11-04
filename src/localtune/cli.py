@@ -66,6 +66,7 @@ from localtune.ollama_pull import (
     PullError,
     UnknownModel,
     download_size,
+    fetch,
     find_ollama,
     is_running,
     ollama_url,
@@ -666,9 +667,12 @@ def find_model_file(model: str | None) -> tuple[Path | None, str | None]:
 
 
 # A model name Ollama could download but hasn't yet: localtune offers to download it right
-# there (ollama_pull.py), with Enter meaning yes, and carries on once it's in. Ollama does the
-# download, so it has to be installed; if it's only closed, it's started. Without someone at
-# the keyboard to say yes (an overnight sweep, a script), nothing is downloaded.
+# there, with Enter meaning yes, and carries on once it's in. The download comes straight from
+# Ollama's online library (ollama_pull.py), so Ollama itself doesn't have to be installed.
+# For "-b api", where a running Ollama is the thing being benchmarked (maybe on another
+# computer), that Ollama is asked to download it instead, so the model lands where it reads
+# from. Without someone at the keyboard to say yes (an overnight sweep, a script), nothing is
+# downloaded.
 
 
 def find_or_download(model: str | None) -> tuple[Path | None, str | None]:
@@ -681,14 +685,6 @@ def find_or_download(model: str | None) -> tuple[Path | None, str | None]:
 def offer_ollama_download(model: str, url: str | None = None) -> bool:
     if model.lower().endswith(".gguf") or manifest_path(model) is None or not can_ask():
         return False
-    url = url or ollama_url()
-    program = find_ollama()
-    if program is None and not is_running(url):
-        console.print(
-            f"{model} isn't downloaded, and Ollama, which downloads models, isn't installed. "
-            "Install it from https://ollama.com/download, then run this again."
-        )
-        raise typer.Exit(1)
     try:
         size = download_size(model)
     except UnknownModel as error:
@@ -697,12 +693,6 @@ def offer_ollama_download(model: str, url: str | None = None) -> bool:
     about = f" ({size / 1e9:.1f} GB)" if size else ""
     if not typer.confirm(f"{model} isn't downloaded yet. Download it now{about}?", default=True):
         return False
-    if not is_running(url):
-        with console.status("Starting Ollama..."):
-            started = program is not None and start_ollama(program, url)
-        if not started:
-            console.print("Ollama didn't start. Open the Ollama app, then run this again.")
-            raise typer.Exit(1)
 
     columns = (
         TextColumn("{task.description}"),
@@ -719,7 +709,10 @@ def offer_ollama_download(model: str, url: str | None = None) -> bool:
             progress.update(task, description=what, completed=done, total=max(total, size or 0))
 
         try:
-            pull(model, url, update)
+            if url:
+                pull(model, url, update)
+            else:
+                fetch(model, update)
         except PullError as error:
             console.print(f"Downloading {model} failed: {error}")
             raise typer.Exit(1) from error
