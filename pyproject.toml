@@ -50,14 +50,20 @@ Homepage = "https://localtune.io"
 [project.scripts]
 localtune = "localtune.cli:app"
 
-# How the code in src/ gets bundled into an installable package. The version number is read
-# from the package itself, so it only ever has to be changed in one place.
+# How the code in src/ gets bundled into an installable package. The version number comes from
+# the newest release tag in git (hatch-vcs): a release tagged v0.2.2 builds as 0.2.2, and code
+# after it as a development version like 0.2.3.dev4. uv reinstalls the project folder after
+# every commit or new tag (cache-keys), so 'uv run localtune --version' stays current.
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/localtune/__init__.py"
+source = "vcs"
+raw-options = { fallback_version = "0.0.0" }
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 # The source download on PyPI holds only what installing localtune needs. The run data, the
 # scripts and the tests stay in the project on GitHub.

@@ -1,0 +1,44 @@
+# Publishes localtune to PyPI when a release is published on GitHub (Releases → Draft a new
+# release, with a tag like v0.2.3). The tag is the version number (pyproject.toml). The same
+# checks as CI run first, so a broken version is never uploaded. PyPI trusts this workflow
+# directly (trusted publishing, set up once on pypi.org), so there's no token to keep anywhere.
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          activate-environment: true
+
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run pytest
+
+  # Only this job can upload, and only from the "pypi" environment PyPI was told about.
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - run: uv build
+      - run: uv publish --trusted-publishing always

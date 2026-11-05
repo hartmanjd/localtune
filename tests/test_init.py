@@ -8,4 +8,4 @@ import localtune
 
 
 def test_version_looks_like_a_version_number():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", localtune.__version__)
+    assert re.match(r"\d+\.\d+\.\d+", localtune.__version__)
