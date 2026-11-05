@@ -91,6 +91,6 @@ def test_predict_shows_the_saved_model_beside_the_formula(tmp_path, monkeypatch)
     train.save(made_up_runs())
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
     assert result.exit_code == 0
-    assert "about 40 tok/s (estimate)" in result.output
+    assert "about 40 tok/s (formula)" in result.output
     assert "Trained model" in result.output
     assert "about 60 tok/s" in result.output

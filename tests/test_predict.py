@@ -52,7 +52,7 @@ def test_predict_for_a_named_gpu():
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
     assert result.exit_code == 0
     assert "Yes, all of it" in result.output
-    assert "about 40 tok/s" in result.output
+    assert "about 40 tok/s (formula)" in result.output
     assert "localtune run qwen3:14b" in result.output
     assert "ollama pull" not in result.output
 
