@@ -198,8 +198,14 @@ def unpack_zip(archive: Path, dest: Path) -> None:
                     shutil.copyfileobj(source, out)
 
 
+# The Linux archives hold one top folder; its contents go straight into dest. Their libraries
+# come with short-name links (libllama.so -> libllama.so.0). Windows only lets programs make
+# links with Developer Mode or as administrator, so where that's refused the link becomes a copy
+# of the file it points to, once everything is unpacked.
+
+
 def unpack_tar(archive: Path, dest: Path) -> None:
-    # The Linux archives hold one top folder; its contents go straight into dest.
+    links = []
     with tarfile.open(archive) as tar:
         for member in tar.getmembers():
             parts = Path(member.name).parts[1:]
@@ -219,12 +225,17 @@ def unpack_tar(archive: Path, dest: Path) -> None:
             elif member.issym():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.unlink(missing_ok=True)
-                target.symlink_to(member.linkname)
+                links.append((target, member.linkname))
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tar.extractfile(member) as source, target.open("wb") as out:
                     shutil.copyfileobj(source, out)
                 target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    for target, points_to in links:
+        try:
+            target.symlink_to(points_to)
+        except OSError:
+            shutil.copy2(target.parent / points_to, target)
 
 
 def install_llama_cpp(
