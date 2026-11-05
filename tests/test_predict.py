@@ -54,6 +54,7 @@ def test_predict_for_a_named_gpu():
     assert "Yes, all of it" in result.output
     assert "about 40 tok/s" in result.output
     assert "localtune run qwen3:14b" in result.output
+    assert "ollama pull" not in result.output
 
 
 def test_predict_for_an_unknown_model():

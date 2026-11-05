@@ -323,7 +323,8 @@ def test_run_with_an_unknown_model(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: None)
     result = runner.invoke(cli.app, ["run", "qwen3:8b"])
     assert result.exit_code == 1
-    assert "ollama pull qwen3:8b" in result.output
+    assert "run this again in a terminal" in result.output
+    assert "ollama pull" not in result.output
 
 
 # A missing Ollama model is offered for download. The download is pretend: "pulled" makes the
@@ -364,7 +365,8 @@ def test_run_stops_when_the_download_is_declined(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="n\n")
     assert pulled == []
     assert result.exit_code == 1
-    assert "ollama pull qwen3:14b" in result.output
+    assert "run this again in a terminal" in result.output
+    assert "ollama pull" not in result.output
 
 
 def test_run_catches_a_misspelled_model_before_asking(monkeypatch, tmp_path):
@@ -959,7 +961,8 @@ def test_sweep_without_any_models(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "downloaded_models", lambda: [])
     result = runner.invoke(cli.app, ["sweep"])
     assert result.exit_code == 1
-    assert "ollama pull" in result.output
+    assert "localtune sweep qwen3:8b" in result.output
+    assert "ollama pull" not in result.output
 
 
 def test_sweep_starts_a_model_too_big_for_the_gpu_from_a_split(monkeypatch, tmp_path):
