@@ -109,8 +109,18 @@ def test_install_puts_everything_in_one_folder(release):
     assert folder == install.install_dir()
     assert (folder / "llama-bench").read_bytes() == b"bench"
     assert (folder / "libcudart.so.13").exists()
-    assert (folder / "libllama.so").resolve() == (folder / "libllama.so.0").resolve()
+    assert (folder / "libllama.so").read_bytes() == (folder / "libllama.so.0").read_bytes()
     assert set(seen) == {"llama.tar.gz", "cudart.tar.gz"}
+
+
+def test_a_link_windows_refuses_becomes_a_copy(release, monkeypatch):
+    def refused(self, target, target_is_directory=False):
+        raise OSError("A required privilege is not held by the client")
+
+    monkeypatch.setattr(install.Path, "symlink_to", refused)
+    folder = install.install_llama_cpp("test", lambda name, done, total: None, release)
+    assert not (folder / "libllama.so").is_symlink()
+    assert (folder / "libllama.so").read_bytes() == (folder / "libllama.so.0").read_bytes()
 
 
 def test_install_unpacks_windows_downloads(tmp_path, monkeypatch):
