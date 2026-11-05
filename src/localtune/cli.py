@@ -350,9 +350,10 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         "measurement."
         + (" It assumes a good GPU/RAM split, which 'localtune tune' finds." if p.in_ram_gb else "")
     )
-    console.print("To measure it for real:")
-    if find_ollama_model(p.model) is None:
-        console.print(f"  ollama pull {p.model}", markup=False, highlight=False)
+    downloaded = find_ollama_model(p.model) is not None
+    console.print(
+        "To measure it for real" + (":" if downloaded else ", downloading the model first:")
+    )
     console.print(f"  localtune run {p.model}", markup=False, highlight=False)
 
 
@@ -729,8 +730,10 @@ def explain_missing_model(model: str | None) -> None:
         console.print(f"Model file not found: {model}")
     else:
         console.print(f"{model} isn't a model file or a model downloaded with Ollama.")
-        console.print("If it's an Ollama model, download it first, then run this again:")
-        console.print(f"  ollama pull {model}", markup=False, highlight=False)
+        console.print(
+            "If it's a model from https://ollama.com/library, run this again in a terminal "
+            "and press Enter to download it."
+        )
 
 
 # For "-b api": finds the running server and the model in it to benchmark, or says what's
@@ -1383,8 +1386,8 @@ def sweep(
         raise typer.Exit(1)
     models = models or downloaded_models()
     if not models:
-        console.print("No models to benchmark. Name some, or download one with Ollama first, like:")
-        console.print("  ollama pull qwen3:8b", markup=False, highlight=False)
+        console.print("No models to benchmark. Name some to download and benchmark, like:")
+        console.print("  localtune sweep qwen3:8b qwen3:14b", markup=False, highlight=False)
         raise typer.Exit(1)
     for model in models:
         find_or_download(model)
