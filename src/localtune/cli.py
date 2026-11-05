@@ -339,9 +339,9 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
     if p.decode_tok_s is not None:
-        table.add_row("Writing speed", f"about {p.decode_tok_s:,.0f} tok/s (estimate)")
+        table.add_row("Writing speed", f"about {p.decode_tok_s:,.0f} tok/s (formula)")
     if trained is not None:
-        table.add_row("Trained model", f"about {trained:,.0f} tok/s")
+        table.add_row("Trained model", f"about {trained:,.0f} tok/s (prediction)")
     console.print(table)
     if p.decode_tok_s is None:
         return
