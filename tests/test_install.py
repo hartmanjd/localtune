@@ -178,6 +178,7 @@ def test_own_llama_cpp_folder_comes_first(tmp_path, monkeypatch, system, program
 def test_own_llama_cpp_folder_can_start_with_home(tmp_path, monkeypatch):
     monkeypatch.setattr(install.platform, "system", lambda: "Linux")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     folder = own_build(tmp_path, "llama-bench")
     monkeypatch.setenv("LOCALTUNE_LLAMA_DIR", "~/my-llama/build/bin")
     assert install.find_tool("llama-bench") == str(folder / "llama-bench")
