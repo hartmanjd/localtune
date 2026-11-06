@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-31",
+  "note": "First release",
+  "runs": 2365,
+  "usable_runs": 2126,
+  "machines": 13,
+  "cards": 12,
+  "models": 7,
+  "miss": 17,
+  "miss_fits": 9,
+  "miss_spills": 26,
+  "median_miss": 11,
+  "within_15": 62,
+  "gpus": {
+    "NVIDIA GeForce RTX 3060": {
+      "runs": 387,
+      "miss": 19
+    },
+    "NVIDIA GeForce RTX 3080": {
+      "runs": 18,
+      "miss": 1
+    },
+    "NVIDIA GeForce RTX 3090": {
+      "runs": 295,
+      "miss": 13
+    },
+    "NVIDIA GeForce RTX 4060 Ti": {
+      "runs": 405,
+      "miss": 13
+    },
+    "NVIDIA GeForce RTX 4070 Ti SUPER": {
+      "runs": 301,
+      "miss": 36
+    },
+    "NVIDIA GeForce RTX 4090": {
+      "runs": 233,
+      "miss": 15
+    },
+    "NVIDIA GeForce RTX 5060 Ti": {
+      "runs": 74,
+      "miss": 12
+    },
+    "NVIDIA GeForce RTX 5090": {
+      "runs": 191,
+      "miss": 8
+    },
+    "NVIDIA RTX A2000": {
+      "runs": 1,
+      "miss": 99
+    },
+    "NVIDIA RTX A6000": {
+      "runs": 129,
+      "miss": 4
+    },
+    "NVIDIA RTX PRO 4000 Blackwell": {
+      "runs": 92,
+      "miss": 26
+    }
+  }
+}
