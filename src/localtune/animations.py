@@ -30,7 +30,8 @@ def enabled(console: Console) -> bool:
 
 
 def play_logo(console: Console) -> None:
-    if not enabled(console):
+    # Left out of a window too narrow for it, where its rows would wrap into a jumble.
+    if not enabled(console) or console.width < WIDTH + 2:
         return
     frames = logo_scene()
     with Live(frames[0], console=console, refresh_per_second=FPS) as live:
