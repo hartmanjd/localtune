@@ -4,4 +4,4 @@
 # and this file is what runs when anything does "import localtune".
 # The version number below is the single source of truth: packaging (pyproject.toml) reads it,
 # and saved benchmark results will record it, so each result shows which version measured it.
-__version__ = "0.3.0"
+__version__ = "0.3.1"
