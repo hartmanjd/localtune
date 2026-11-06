@@ -30,6 +30,7 @@ NEWER_NVIDIA_SMI_HEADER = """
 def temporary_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("LOCALTUNE_LLAMA_DIR", raising=False)
 
 
 def make_archive(path, files, links=()):
@@ -143,6 +144,54 @@ def test_installed_tools_are_found(monkeypatch, system, program):
     install.install_dir().mkdir(parents=True)
     (install.install_dir() / program).write_text("")
     assert install.find_tool("llama-bench") == str(install.install_dir() / program)
+
+
+# A llama.cpp someone built or keeps themselves, named in LOCALTUNE_LLAMA_DIR, is used before
+# the PATH and the installed copy; a program that folder doesn't have is still found elsewhere.
+
+
+def own_build(tmp_path, *programs):
+    folder = tmp_path / "my-llama" / "build" / "bin"
+    folder.mkdir(parents=True)
+    for program in programs:
+        (folder / program).write_text("")
+    return folder
+
+
+@pytest.mark.parametrize(
+    "system, program", [("Linux", "llama-bench"), ("Windows", "llama-bench.exe")]
+)
+def test_own_llama_cpp_folder_comes_first(tmp_path, monkeypatch, system, program):
+    monkeypatch.setattr(install.platform, "system", lambda: system)
+    install.install_dir().mkdir(parents=True)
+    (install.install_dir() / program).write_text("")
+    on_path = tmp_path / "on-path"
+    on_path.mkdir()
+    (on_path / program).write_text("")
+    (on_path / program).chmod(0o755)
+    monkeypatch.setenv("PATH", str(on_path))
+    folder = own_build(tmp_path, program)
+    monkeypatch.setenv("LOCALTUNE_LLAMA_DIR", str(folder))
+    assert install.find_tool("llama-bench") == str(folder / program)
+
+
+def test_own_llama_cpp_folder_can_start_with_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    folder = own_build(tmp_path, "llama-bench")
+    monkeypatch.setenv("LOCALTUNE_LLAMA_DIR", "~/my-llama/build/bin")
+    assert install.find_tool("llama-bench") == str(folder / "llama-bench")
+
+
+def test_a_program_missing_from_own_folder_is_found_elsewhere(tmp_path, monkeypatch):
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    folder = own_build(tmp_path, "llama-bench")
+    monkeypatch.setenv("LOCALTUNE_LLAMA_DIR", str(folder))
+    assert install.find_tool("llama-perplexity") is None
+    install.install_dir().mkdir(parents=True)
+    (install.install_dir() / "llama-perplexity").write_text("")
+    assert install.find_tool("llama-perplexity") == str(install.install_dir() / "llama-perplexity")
 
 
 def test_a_damaged_download_is_refused(release, monkeypatch):

@@ -53,6 +53,7 @@ def test_missing_tool_offers_the_install():
     check = doctor.check_tool("llama-bench", None)
     assert check.status == "warn"
     assert "install" in check.fix
+    assert "LOCALTUNE_LLAMA_DIR" in check.fix
 
 
 def test_low_disk_space_warns():
