@@ -173,3 +173,26 @@ def test_experts_kept_in_ram_are_part_of_the_file():
     assert 0.8 * facts.file_bytes < all_experts < facts.file_bytes
     assert kept_in_ram(facts, None, facts.layers // 2) == pytest.approx(all_experts / 2)
     assert kept_in_ram(model_facts("qwen3:14b"), None, 10) == 0
+
+
+# "localtune models" and "localtune gpus" print the tables predict reads, optionally only the
+# rows whose name contains a word.
+
+
+def test_models_lists_the_model_table():
+    result = runner.invoke(cli.app, ["models", "qwen3"])
+    assert result.exit_code == 0
+    assert "qwen3:14b" in result.output
+    assert "llama3.1:8b" not in result.output
+
+
+def test_gpus_lists_the_gpu_table():
+    result = runner.invoke(cli.app, ["gpus", "4070 ti super"])
+    assert result.exit_code == 0
+    assert "RTX 4070 Ti SUPER" in result.output
+    assert "RTX 4090" not in result.output
+
+
+def test_a_search_with_no_match_says_so():
+    assert runner.invoke(cli.app, ["models", "no-such-model"]).exit_code == 1
+    assert runner.invoke(cli.app, ["gpus", "no-such-gpu"]).exit_code == 1
