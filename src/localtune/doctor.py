@@ -74,7 +74,10 @@ def check_tool(name: str, path: str | None) -> Check:
         name=name,
         status="warn",
         detail="not found",
-        fix="localtune can install llama.cpp for you (answer y below, or use --install).",
+        fix=(
+            "localtune can install llama.cpp for you (answer y below, or use --install). "
+            "To use your own llama.cpp, set LOCALTUNE_LLAMA_DIR to the folder its programs are in."
+        ),
     )
 
 
@@ -84,8 +87,11 @@ def check_servers(servers: list[str]) -> Check:
     return Check(
         name="Local AI server",
         status="warn",
-        detail="none running",
-        fix="Only needed for 'localtune run -b api': start Ollama, llama-server or LM Studio.",
+        detail="none on the usual ports",
+        fix=(
+            "Only needed for 'localtune run -b api': start Ollama, llama-server or LM Studio. "
+            "A server on another port or computer works too: give its address with --url."
+        ),
     )
 
 
