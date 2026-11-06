@@ -34,6 +34,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 from rich.table import Table
+from typer import rich_utils
 
 from localtune import __version__
 from localtune.animations import left_words, play_logo, span_words, working
@@ -161,6 +162,13 @@ from localtune.uses import USES, UnknownUseError, token_lengths
 
 app = typer.Typer()
 console = Console()
+
+# The help screens are at most 80 columns wide, and narrower in a narrower window, so their boxes
+# stay whole when the window is made a little narrower after they're printed (the terminal
+# re-wraps printed lines that no longer fit). TERMINAL_WIDTH, typer's own setting, still wins.
+HELP_WIDTH = 80
+if rich_utils.MAX_WIDTH is None:
+    rich_utils.MAX_WIDTH = min(HELP_WIDTH, shutil.get_terminal_size().columns)
 
 
 # "localtune" on its own plays the logo (animations.py) and lists the commands, and

@@ -97,3 +97,11 @@ def test_a_loader_runs_while_the_work_does(monkeypatch):
         pass
     with working(Console(file=io.StringIO()), "sweep", "Run 1 of 2"):
         pass
+
+
+def test_the_logo_is_left_out_of_a_narrow_window(monkeypatch):
+    monkeypatch.delenv(animations.OFF_SWITCH, raising=False)
+    monkeypatch.setattr(animations.time, "sleep", lambda seconds: None)
+    console = Console(file=io.StringIO(), force_terminal=True, width=40)
+    play_logo(console)
+    assert shown(console) == ""
