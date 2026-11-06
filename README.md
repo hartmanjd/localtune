@@ -44,6 +44,17 @@ See whether a model fits on your GPU and how fast it should write, before downlo
 localtune predict qwen3:14b
 ```
 
+See the models and GPUs `predict` knows (the 100 most downloaded models on Ollama, and NVIDIA's
+RTX 20 to 50 cards plus common data center GPUs). Add a word to show only matching names:
+
+```
+localtune models qwen3
+```
+
+```
+localtune gpus 4090
+```
+
 Benchmark any model from [Ollama's library](https://ollama.com/library), or a `.gguf` file.
 A model you don't have yet is downloaded first; Ollama itself doesn't need to be installed:
 
