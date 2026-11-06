@@ -135,28 +135,69 @@ def driver_cuda_version() -> tuple[int, int] | None:
     return parse_cuda_version(result.stdout)
 
 
-# Where the installed programs live, and finding a program. A folder named in
-# LOCALTUNE_LLAMA_DIR comes first, for people who built llama.cpp themselves or keep it somewhere
-# that isn't on their PATH. Then the PATH (for people who installed llama.cpp themselves), then
-# the copy installed here. On Windows the programs end in .exe.
+# Where the installed programs live, and finding a program. A llama.cpp someone built or keeps
+# themselves comes first: the folder named in LOCALTUNE_LLAMA_DIR, or else the one saved in the
+# llama_dir file when doctor found it or was told where it is. Then the PATH (for people who
+# installed llama.cpp themselves), then the copy installed here. On Windows the programs end in
+# .exe.
 
 
 def install_dir() -> Path:
     return home_dir() / "llama.cpp" / LLAMA_CPP_BUILD
 
 
+def program_name(name: str) -> str:
+    return name + ".exe" if platform.system() == "Windows" else name
+
+
+def llama_dir_file() -> Path:
+    return home_dir() / "llama_dir"
+
+
+def own_llama_dir() -> Path | None:
+    named = os.environ.get("LOCALTUNE_LLAMA_DIR")
+    if named:
+        return Path(named).expanduser()
+    saved = llama_dir_file()
+    if saved.is_file() and (text := saved.read_text().strip()):
+        return Path(text)
+    return None
+
+
+def save_llama_dir(folder: Path) -> None:
+    llama_dir_file().parent.mkdir(parents=True, exist_ok=True)
+    llama_dir_file().write_text(str(folder.resolve()) + "\n")
+
+
+def has_llama_bench(folder: Path) -> bool:
+    return (folder / program_name("llama-bench")).is_file()
+
+
 def find_tool(name: str) -> str | None:
-    program = name + ".exe" if platform.system() == "Windows" else name
-    own_dir = os.environ.get("LOCALTUNE_LLAMA_DIR")
-    if own_dir:
-        own = Path(own_dir).expanduser() / program
-        if own.is_file():
-            return str(own)
+    own = own_llama_dir()
+    if own and (own / program_name(name)).is_file():
+        return str(own / program_name(name))
     found = shutil.which(name)
     if found:
         return found
-    installed = install_dir() / program
+    installed = install_dir() / program_name(name)
     return str(installed) if installed.is_file() else None
+
+
+# llama.cpp built from source leaves its programs in build/bin inside the folder it was cloned
+# to (build/bin/Release on Windows), so doctor looks for that in the places people usually keep
+# code, and offers what it finds before downloading another copy.
+
+SOURCE_PARENTS = ("", "src", "code", "git", "projects", "repos", "Documents")
+BUILD_FOLDERS = (Path("build", "bin"), Path("build", "bin", "Release"))
+
+
+def find_own_builds() -> list[Path]:
+    home = Path.home()
+    candidates = [
+        home / parent / "llama.cpp" / build for parent in SOURCE_PARENTS for build in BUILD_FOLDERS
+    ]
+    return [folder for folder in candidates if has_llama_bench(folder)]
 
 
 # Downloading and unpacking. Each file is checked against its fingerprint before anything is

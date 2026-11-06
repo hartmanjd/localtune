@@ -194,6 +194,36 @@ def test_a_program_missing_from_own_folder_is_found_elsewhere(tmp_path, monkeypa
     assert install.find_tool("llama-perplexity") == str(install.install_dir() / "llama-perplexity")
 
 
+def test_a_saved_folder_is_used_unless_one_is_named(tmp_path, monkeypatch):
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    saved = own_build(tmp_path, "llama-bench")
+    install.save_llama_dir(saved)
+    assert install.find_tool("llama-bench") == str(saved.resolve() / "llama-bench")
+    named = tmp_path / "other"
+    named.mkdir()
+    (named / "llama-bench").write_text("")
+    monkeypatch.setenv("LOCALTUNE_LLAMA_DIR", str(named))
+    assert install.find_tool("llama-bench") == str(named / "llama-bench")
+
+
+@pytest.mark.parametrize(
+    "system, build, program",
+    [
+        ("Linux", ("build", "bin"), "llama-bench"),
+        ("Windows", ("build", "bin", "Release"), "llama-bench.exe"),
+    ],
+)
+def test_source_builds_are_found_in_usual_places(tmp_path, monkeypatch, system, build, program):
+    monkeypatch.setattr(install.platform, "system", lambda: system)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert install.find_own_builds() == []
+    folder = tmp_path.joinpath("code", "llama.cpp", *build)
+    folder.mkdir(parents=True)
+    (folder / program).write_text("")
+    assert install.find_own_builds() == [folder]
+
+
 def test_a_damaged_download_is_refused(release, monkeypatch):
     monkeypatch.setitem(install.DOWNLOADS["test"], "llama.tar.gz", "0" * 64)
     with pytest.raises(InstallError, match="didn't download correctly"):
