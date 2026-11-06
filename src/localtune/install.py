@@ -7,6 +7,7 @@
 # and localtune finds the programs there without anyone editing their PATH.
 
 import hashlib
+import os
 import platform
 import re
 import shutil
@@ -134,9 +135,10 @@ def driver_cuda_version() -> tuple[int, int] | None:
     return parse_cuda_version(result.stdout)
 
 
-# Where the installed programs live, and finding a program either there or anywhere on the
-# PATH (for people who installed llama.cpp themselves, which always takes priority). On
-# Windows the programs end in .exe.
+# Where the installed programs live, and finding a program. A folder named in
+# LOCALTUNE_LLAMA_DIR comes first, for people who built llama.cpp themselves or keep it somewhere
+# that isn't on their PATH. Then the PATH (for people who installed llama.cpp themselves), then
+# the copy installed here. On Windows the programs end in .exe.
 
 
 def install_dir() -> Path:
@@ -144,12 +146,16 @@ def install_dir() -> Path:
 
 
 def find_tool(name: str) -> str | None:
+    program = name + ".exe" if platform.system() == "Windows" else name
+    own_dir = os.environ.get("LOCALTUNE_LLAMA_DIR")
+    if own_dir:
+        own = Path(own_dir).expanduser() / program
+        if own.is_file():
+            return str(own)
     found = shutil.which(name)
     if found:
         return found
-    if platform.system() == "Windows":
-        name += ".exe"
-    installed = install_dir() / name
+    installed = install_dir() / program
     return str(installed) if installed.is_file() else None
 
 
