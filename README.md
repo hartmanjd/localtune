@@ -75,6 +75,35 @@ Run `localtune` on its own to list every command, and add `--help` to any comman
 options. Runs are saved in `~/.localtune` (set `LOCALTUNE_HOME` to use another folder) and
 stay on your computer.
 
+## Your own llama.cpp or AI server
+
+localtune looks for llama.cpp's programs (`llama-bench`, `llama-server`) on your PATH, then in
+the copy it installs itself. If you built llama.cpp yourself, or keep it in a folder that isn't
+on your PATH, point localtune at the folder that holds those programs.
+
+Linux, macOS or WSL:
+
+```
+export LOCALTUNE_LLAMA_DIR=~/llama.cpp/build/bin
+```
+
+Windows (PowerShell):
+
+```
+$env:LOCALTUNE_LLAMA_DIR = "C:\llama.cpp\build\bin\Release"
+```
+
+That folder is used before anything else, by `doctor`, `run` and `tune` alike. Add the line to
+your shell's startup file (such as `~/.bashrc`) to keep it set in new terminals.
+
+`localtune doctor` looks for a running AI server (Ollama, llama-server, LM Studio, vLLM) on
+its usual port on this computer. A server on another port, or on another computer, works too:
+give its address with `--url`.
+
+```
+localtune run -b api --url http://127.0.0.1:8081
+```
+
 ## Data sources
 
 Electricity cost uses the most local price localtune has: your zip code, then your state or
