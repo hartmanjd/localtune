@@ -10,7 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from localtune import __version__, cli, tune
+from localtune import __version__, cli, install, tune
 from localtune.background import Background
 from localtune.doctor import Check
 from localtune.gguf import ModelLayout
@@ -171,8 +171,11 @@ def test_doctor_without_an_engine(monkeypatch):
     assert "needs llama.cpp" in result.output
 
 
-def missing_llama_cpp(monkeypatch, installed):
+def missing_llama_cpp(monkeypatch, installed, tmp_path):
     # A computer with a GPU but no llama.cpp, until the (pretend) install runs.
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("LOCALTUNE_LLAMA_DIR", raising=False)
+
     def checks():
         bench = "ok" if installed else "warn"
         return fake_checks("ok", bench)()
@@ -185,30 +188,31 @@ def missing_llama_cpp(monkeypatch, installed):
     monkeypatch.setattr(cli, "run_checks", checks)
     monkeypatch.setattr(cli, "choose_build", lambda: "linux-cuda-13.4")
     monkeypatch.setattr(cli, "install_llama_cpp", fake_install)
+    monkeypatch.setattr(cli, "find_own_builds", lambda: [])
 
 
-def test_doctor_installs_llama_cpp_when_asked(monkeypatch):
+def test_doctor_installs_llama_cpp_when_asked(monkeypatch, tmp_path):
     installed = []
-    missing_llama_cpp(monkeypatch, installed)
+    missing_llama_cpp(monkeypatch, installed, tmp_path)
     result = runner.invoke(cli.app, ["doctor", "--install"])
     assert installed == ["linux-cuda-13.4"]
     assert "Installed llama.cpp" in result.output
     assert result.exit_code == 0
 
 
-def test_doctor_asks_before_installing(monkeypatch):
+def test_doctor_asks_before_installing(monkeypatch, tmp_path):
     installed = []
-    missing_llama_cpp(monkeypatch, installed)
+    missing_llama_cpp(monkeypatch, installed, tmp_path)
     monkeypatch.setattr(cli, "can_ask", lambda: True)
-    result = runner.invoke(cli.app, ["doctor"], input="n\n")
+    result = runner.invoke(cli.app, ["doctor"], input="n\n\n")
     assert "Download and install it now" in result.output
     assert installed == []
     assert result.exit_code == 1
 
 
-def test_doctor_explains_when_it_cant_install(monkeypatch):
+def test_doctor_explains_when_it_cant_install(monkeypatch, tmp_path):
     installed = []
-    missing_llama_cpp(monkeypatch, installed)
+    missing_llama_cpp(monkeypatch, installed, tmp_path)
 
     def too_old():
         raise cli.InstallError("Update the driver")
@@ -217,6 +221,49 @@ def test_doctor_explains_when_it_cant_install(monkeypatch):
     result = runner.invoke(cli.app, ["doctor", "--install"])
     assert "can't be installed automatically: Update the driver" in result.output
     assert installed == []
+
+
+# A llama.cpp already on the computer: one doctor finds in a usual place, or one whose folder is
+# typed after saying no to installing. Either is saved for run, tune and later doctors.
+
+
+def own_build(tmp_path):
+    folder = tmp_path / "llama.cpp" / "build" / "bin"
+    folder.mkdir(parents=True)
+    (folder / install.program_name("llama-bench")).write_text("")
+    return folder
+
+
+def test_doctor_offers_a_llama_cpp_it_finds(monkeypatch, tmp_path):
+    installed = []
+    missing_llama_cpp(monkeypatch, installed, tmp_path)
+    folder = own_build(tmp_path)
+    monkeypatch.setattr(cli, "find_own_builds", lambda: [folder])
+    monkeypatch.setattr(cli, "can_ask", lambda: True)
+    result = runner.invoke(cli.app, ["doctor"], input="\n")
+    assert f"Found llama.cpp in {folder}" in result.output
+    assert installed == []
+    assert install.own_llama_dir() == folder.resolve()
+
+
+def test_doctor_takes_the_folder_of_your_own_llama_cpp(monkeypatch, tmp_path):
+    installed = []
+    missing_llama_cpp(monkeypatch, installed, tmp_path)
+    folder = own_build(tmp_path)
+    monkeypatch.setattr(cli, "can_ask", lambda: True)
+    result = runner.invoke(cli.app, ["doctor"], input=f'n\n"{folder}"\n')
+    assert "localtune will use the llama.cpp in" in result.output
+    assert installed == []
+    assert install.own_llama_dir() == folder.resolve()
+
+
+def test_doctor_refuses_a_folder_without_llama_bench(monkeypatch, tmp_path):
+    missing_llama_cpp(monkeypatch, [], tmp_path)
+    monkeypatch.setattr(cli, "can_ask", lambda: True)
+    result = runner.invoke(cli.app, ["doctor"], input=f"n\n{tmp_path}\n")
+    assert "There's no llama-bench in" in result.output
+    assert install.own_llama_dir() is None
+    assert result.exit_code == 1
 
 
 def fake_run(monkeypatch, tmp_path, outcome):

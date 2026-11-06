@@ -75,8 +75,8 @@ def check_tool(name: str, path: str | None) -> Check:
         status="warn",
         detail="not found",
         fix=(
-            "localtune can install llama.cpp for you (answer y below, or use --install). "
-            "To use your own llama.cpp, set LOCALTUNE_LLAMA_DIR to the folder its programs are in."
+            "localtune can install llama.cpp for you, or use one you already have: answer the "
+            "questions below, use --install, or set LOCALTUNE_LLAMA_DIR to its folder."
         ),
     )
 

@@ -52,8 +52,11 @@ from localtune.install import (
     DOWNLOAD_MB,
     InstallError,
     choose_build,
+    find_own_builds,
     find_tool,
+    has_llama_bench,
     install_llama_cpp,
+    save_llama_dir,
 )
 from localtune.meter import gpu_programs, is_busy, wait_for_room
 from localtune.models import find_model, load_model_table
@@ -486,19 +489,26 @@ def can_ask() -> bool:
 
 
 def offer_llama_cpp(ask: bool) -> bool:
+    if ask and can_ask():
+        for folder in find_own_builds():
+            if typer.confirm(f"Found llama.cpp in {folder}. Use it?", default=True):
+                return keep_llama_dir(folder)
+
     try:
         build = choose_build()
     except InstallError as error:
         console.print(f"llama.cpp can't be installed automatically: {error}")
-        return False
+        return ask and can_ask() and ask_llama_dir()
 
     if ask:
         question = (
             f"llama.cpp isn't installed. Download and install it now "
             f"(about {DOWNLOAD_MB[build]} MB)?"
         )
-        if not can_ask() or not typer.confirm(question, default=True):
+        if not can_ask():
             return False
+        if not typer.confirm(question, default=True):
+            return ask_llama_dir()
 
     columns = (
         TextColumn("{task.description}"),
@@ -521,6 +531,32 @@ def offer_llama_cpp(ask: bool) -> bool:
             console.print(f"Installing llama.cpp failed: {error}")
             return False
     console.print(f"Installed llama.cpp in {folder}")
+    return True
+
+
+# Using a llama.cpp that's already on this computer instead: the folder doctor found or was
+# told is saved (install.py), so run, tune and every later doctor use it too.
+
+
+def ask_llama_dir() -> bool:
+    answer = typer.prompt(
+        "Already have llama.cpp? Type the folder its programs are in (Enter to skip)",
+        default="",
+        show_default=False,
+    )
+    text = answer.strip().strip("'\"")
+    if not text:
+        return False
+    folder = Path(text).expanduser()
+    if not has_llama_bench(folder):
+        console.print(f"There's no llama-bench in {folder}.", markup=False)
+        return False
+    return keep_llama_dir(folder)
+
+
+def keep_llama_dir(folder: Path) -> bool:
+    save_llama_dir(folder)
+    console.print(f"localtune will use the llama.cpp in {folder}.", markup=False)
     return True
 
 
