@@ -46,7 +46,7 @@ from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_check
 from localtune.eta import SweepClock, guess_run, pace, raw_seconds
 from localtune.gguf import GgufError, read_layout
 from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
-from localtune.gpus import find_gpu_spec
+from localtune.gpus import find_gpu_spec, load_gpu_table
 from localtune.hardware import GpuInfo, HardwareInfo, detect_hardware, find_nvidia_smi
 from localtune.install import (
     DOWNLOAD_MB,
@@ -56,7 +56,7 @@ from localtune.install import (
     install_llama_cpp,
 )
 from localtune.meter import gpu_programs, is_busy, wait_for_room
-from localtune.models import find_model
+from localtune.models import find_model, load_model_table
 from localtune.ollama_models import (
     downloaded_models,
     find_ollama_model,
@@ -289,7 +289,7 @@ def predict_command(
     if found is None:
         console.print(
             f"{model} isn't in localtune's model table, which has the 100 most downloaded "
-            "models on Ollama. Check the name on ollama.com/library.",
+            "models on Ollama. See the names it knows with 'localtune models'.",
             markup=False,
         )
         raise typer.Exit(1)
@@ -297,7 +297,11 @@ def predict_command(
     if gpu_name:
         spec = find_gpu_spec(gpu_name)
         if spec is None:
-            console.print(f"{gpu_name} isn't in localtune's GPU table.", markup=False)
+            console.print(
+                f"{gpu_name} isn't in localtune's GPU table. "
+                "See the names it knows with 'localtune gpus'.",
+                markup=False,
+            )
             raise typer.Exit(1)
         hw = HardwareInfo(
             os="",
@@ -363,6 +367,72 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         "To measure it for real" + (":" if downloaded else ", downloading the model first:")
     )
     console.print(f"  localtune run {p.model}", markup=False, highlight=False)
+
+
+# "localtune models" and "localtune gpus": the two tables predict reads (models.py, gpus.py),
+# printed in the terminal, so anyone can see which names localtune knows without opening the
+# package's files. A word after the command keeps only the rows whose name contains it.
+
+
+def matching(name: str, search: str | None) -> bool:
+    return search is None or search.lower() in name.lower()
+
+
+@app.command("models")
+def models_command(
+    search: Annotated[
+        str | None, typer.Argument(help="Show only names containing this, like qwen3.")
+    ] = None,
+) -> None:
+    """List the models predict knows, the 100 most downloaded on Ollama."""
+    rows = [m for m in load_model_table() if matching(m.name, search)]
+    if not rows:
+        console.print(f"No model in localtune's table matches {search}.", markup=False)
+        raise typer.Exit(1)
+    table = Table(title="Models localtune knows")
+    table.add_column("Model")
+    table.add_column("Parameters", justify="right")
+    table.add_column("Used per word", justify="right")
+    table.add_column("Download", justify="right")
+    for model in rows:
+        default = model.files[0] if model.files else None
+        table.add_row(
+            model.name,
+            f"{model.params / 1e9:,.1f}B",
+            f"{model.active_params / 1e9:,.1f}B" if model.active_params != model.params else "all",
+            f"{default.size_bytes / 1e9:,.1f} GB" if default else "",
+        )
+    console.print(table)
+
+
+@app.command("gpus")
+def gpus_command(
+    search: Annotated[
+        str | None, typer.Argument(help="Show only names containing this, like 4090.")
+    ] = None,
+) -> None:
+    """List the GPUs predict knows, for --gpu-name."""
+    rows = [g for g in load_gpu_table() if matching(g.name, search)]
+    if not rows:
+        console.print(f"No GPU in localtune's table matches {search}.", markup=False)
+        raise typer.Exit(1)
+    table = Table(title="GPUs localtune knows")
+    table.add_column("GPU")
+    table.add_column("VRAM", justify="right")
+    table.add_column("Bandwidth", justify="right")
+    table.add_column("Compute", justify="right")
+    table.add_column("Power", justify="right")
+    table.add_column("Architecture")
+    for gpu in rows:
+        table.add_row(
+            gpu.name,
+            f"{gpu.vram_gb:g} GB",
+            f"{gpu.memory_bandwidth_gbs:,.0f} GB/s",
+            f"{gpu.fp32_tflops:g} TFLOPS",
+            f"{gpu.board_power_w:,.0f} W",
+            gpu.architecture,
+        )
+    console.print(table)
 
 
 # "localtune doctor": checks everything a benchmark needs and shows what to fix. When llama.cpp
