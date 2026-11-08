@@ -655,34 +655,86 @@ def test_tune_can_skip_the_quality_check(monkeypatch, tmp_path):
     assert "A q8_0 KV cache saves memory" in result.output
 
 
-def tune_beside_ollama(monkeypatch, tmp_path, ollama_decode):
-    # Tuning an Ollama model while Ollama is running, where Ollama writes at ollama_decode tok/s.
+def beside_ollama(monkeypatch, tmp_path, ollama_decode, tuned_decode=110):
+    # Ollama running beside a tuned model, where Ollama writes at ollama_decode tok/s and the
+    # tuned settings in llama-server at tuned_decode tok/s, both through the chat API.
     model = fake_run(monkeypatch, tmp_path, tuned_run)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: model)
     ollama = Server(name="Ollama", version="0.40.11", url="http://127.0.0.1:11434", models=[])
     ollama.models = ["qwen3:14b"]
     monkeypatch.setattr(cli, "find_server", lambda url=None: ollama)
+    unloaded = []
+    monkeypatch.setattr(cli, "unload_from_ollama", lambda server, name: unloaded.append(name))
 
     def in_ollama(server, name, options):
+        assert unloaded == [name]
         run = example_run("", model, BenchOptions(), name)
         run.settings.engine, run.speed.decode_tok_s = "Ollama", ollama_decode
+        run.settings.engine_version = server.version
+        return run
+
+    def in_llama_server(llama_server, model_file, best, placement, options, name, *rest):
+        run = example_run("", model, BenchOptions(), name)
+        run.settings = best.settings.model_copy(update={"engine": "llama-server"})
+        run.speed.decode_tok_s = tuned_decode
         return run
 
     monkeypatch.setattr(cli, "run_web_api", in_ollama)
+    monkeypatch.setattr(cli, "run_tuned_server", in_llama_server)
     wide_terminal(monkeypatch)
+    return model
+
+
+def tune_beside_ollama(monkeypatch, tmp_path, ollama_decode, tuned_decode=110):
+    beside_ollama(monkeypatch, tmp_path, ollama_decode, tuned_decode)
     return runner.invoke(cli.app, ["tune", "qwen3:14b", "--no-quality"])
 
 
-def test_tune_compares_an_ollama_model_with_ollama(monkeypatch, tmp_path):
+def test_tune_compares_an_ollama_model_with_ollama_through_the_same_api(monkeypatch, tmp_path):
     result = tune_beside_ollama(monkeypatch, tmp_path, ollama_decode=80)
-    assert "Tuned is 45% faster than Ollama (1.2 s per answer instead of 1.7 s)." in result.output
+    said = " ".join(result.output.split())
+    assert "in this test, the tuned settings answered 35% faster than Ollama" in said
+    assert "(tuned 1.23 s per answer, Ollama 1.67 s)" in said
+    assert "Ollama 0.40.11 at its own settings" in result.output
+    assert "80.0 tok/s (60 words/s)" in result.output
     saved = load_results()
-    assert saved[-1].settings.engine == "Ollama" and saved[-1].tune_id == saved[0].tune_id
+    assert [run.settings.engine for run in saved[-2:]] == ["llama-server", "Ollama"]
+    assert saved[-1].tune_id == saved[-2].tune_id == saved[0].tune_id
 
 
 def test_tune_says_to_keep_ollama_when_it_is_as_fast(monkeypatch, tmp_path):
-    result = tune_beside_ollama(monkeypatch, tmp_path, ollama_decode=118)
-    assert "Ollama is already as fast as these settings" in result.output
+    result = tune_beside_ollama(monkeypatch, tmp_path, ollama_decode=110)
+    assert "On this PC, Ollama is as fast as the tuned settings" in result.output
+    assert "faster than Ollama" not in result.output
+
+
+def test_tune_says_so_when_ollama_is_faster(monkeypatch, tmp_path):
+    result = tune_beside_ollama(monkeypatch, tmp_path, ollama_decode=150)
+    assert "On this PC, Ollama is faster than the tuned settings" in result.output
+
+
+def test_tune_skips_the_comparison_without_llama_server(monkeypatch, tmp_path):
+    beside_ollama(monkeypatch, tmp_path, ollama_decode=80)
+    monkeypatch.setattr(cli, "find_tool", lambda name: None if name == "llama-server" else name)
+    result = runner.invoke(cli.app, ["tune", "qwen3:14b", "--no-quality"])
+    assert "llama-server isn't installed" in result.output
+    assert "faster than Ollama" not in result.output
+
+
+def test_compare_measures_the_last_tuned_settings_against_ollama(monkeypatch, tmp_path):
+    beside_ollama(monkeypatch, tmp_path, ollama_decode=80)
+    runner.invoke(cli.app, ["tune", "qwen3:14b", "--no-quality", "--no-ollama"])
+    result = runner.invoke(cli.app, ["compare", "qwen3:14b"])
+    assert result.exit_code == 0
+    assert "flash attention on, q8_0 KV cache, micro-batch 2048" in result.output
+    assert "the tuned settings answered 35% faster" in " ".join(result.output.split())
+
+
+def test_compare_asks_to_tune_first(monkeypatch, tmp_path):
+    beside_ollama(monkeypatch, tmp_path, ollama_decode=80)
+    result = runner.invoke(cli.app, ["compare", "qwen3:14b", "--use", "chat"])
+    assert result.exit_code == 1
+    assert "Run 'localtune tune qwen3:14b --use chat' first." in result.output
 
 
 def test_tune_says_when_tuning_made_no_real_difference(monkeypatch, tmp_path):

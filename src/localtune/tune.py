@@ -151,6 +151,17 @@ def server_context(tokens: int) -> int:
 def server_flags(
     run: RunResult, placement: dict, tokens: int, threads: int | None = None, gpu: int = 0
 ) -> str:
+    return " ".join(server_args(run, placement, tokens, threads, gpu))
+
+
+def server_args(
+    run: RunResult,
+    placement: dict,
+    tokens: int,
+    threads: int | None = None,
+    gpu: int = 0,
+    port: int = SERVER_PORT,
+) -> list[str]:
     s = run.settings
     gpu_layers = placement.get("gpu_layers")
     flags = {
@@ -164,9 +175,11 @@ def server_flags(
         "-t": threads,
         "-mg": gpu or None,
         "-np": 1,
-        "--port": SERVER_PORT,
+        "--port": port,
     }
-    return " ".join(f"{flag} {value}" for flag, value in flags.items() if value is not None)
+    return [
+        str(part) for flag, value in flags.items() if value is not None for part in (flag, value)
+    ]
 
 
 # Models bigger than the GPU. llama.cpp can keep part of a model in the computer's normal

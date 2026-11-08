@@ -69,6 +69,14 @@ Find the fastest llama.cpp settings for it on your computer, and get a ready-to-
 localtune tune qwen3:14b
 ```
 
+For a model downloaded with Ollama, with Ollama running, tune then runs the same chat test in
+Ollama and in `llama-server` at the tuned settings, one after the other, and shows both. To
+repeat that comparison later without tuning again:
+
+```
+localtune compare qwen3:14b
+```
+
 Benchmark every model you have in Ollama, one after another:
 
 ```
