@@ -160,10 +160,12 @@ class AskError(Exception):
     pass
 
 
-def call(url: str, path: str, body: dict, timeout_s: float = 60, method: str = "POST") -> dict:
+def call(
+    url: str, path: str, body: dict | None, timeout_s: float = 60, method: str = "POST"
+) -> dict:
     request = urllib.request.Request(
         url + path,
-        data=json.dumps(body).encode(),
+        data=None if body is None else json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
         method=method,
     )
@@ -179,6 +181,17 @@ def call(url: str, path: str, body: dict, timeout_s: float = 60, method: str = "
     except (urllib.error.URLError, OSError) as error:
         raise AskError(f"Ollama didn't answer ({error})") from error
     return json.loads(text) if text.strip() else {}
+
+
+# Whether Ollama already has a model, asked of Ollama itself, since it is Ollama that deletes the
+# models "localtune samples" downloaded; a model the person had before is never deleted. A name
+# with no tag means its "latest" tag, the way Ollama lists it.
+
+
+def ollama_has(url: str, model: str) -> bool:
+    listed = call(url, "/api/tags", None, timeout_s=10, method="GET").get("models") or []
+    wanted = model if ":" in model.rsplit("/", 1)[-1] else f"{model}:latest"
+    return any(wanted in (entry.get("name"), entry.get("model")) for entry in listed)
 
 
 def can_think(url: str, model: str) -> bool:

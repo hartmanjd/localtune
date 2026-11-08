@@ -9,6 +9,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 
 DEFAULT_REGISTRY = "registry.ollama.ai"
@@ -17,11 +18,21 @@ MODEL_LAYER = "application/vnd.ollama.image.model"
 
 
 # Ollama's folder: the one its OLLAMA_MODELS setting points to, or .ollama/models in the home
-# folder (on Windows, Linux and macOS alike).
+# folder (on Windows, Linux and macOS alike). Models localtune downloads itself go there.
+# On Linux, Ollama's own installer runs Ollama as a separate "ollama" user whose models live in
+# /usr/share/ollama/.ollama/models, so that folder is searched too when nothing else is set.
+LINUX_SERVICE_DIR = Path("/usr/share/ollama/.ollama/models")
 
 
 def models_dir() -> Path:
     return Path(os.environ.get("OLLAMA_MODELS") or Path.home() / ".ollama" / "models")
+
+
+def model_dirs() -> list[Path]:
+    folders = [models_dir()]
+    if not os.environ.get("OLLAMA_MODELS") and sys.platform.startswith("linux"):
+        folders.append(LINUX_SERVICE_DIR)
+    return folders
 
 
 # A name like qwen3:14b is short for registry.ollama.ai/library/qwen3:14b, and a name with no
@@ -41,22 +52,30 @@ def full_name(name: str) -> list[str] | None:
     return [*parts, tag or "latest"]
 
 
-def manifest_path(name: str) -> Path | None:
+def manifest_path(name: str, folder: Path | None = None) -> Path | None:
     parts = full_name(name)
-    return None if parts is None else models_dir().joinpath("manifests", *parts)
+    return None if parts is None else (folder or models_dir()).joinpath("manifests", *parts)
 
 
 def find_ollama_model(name: str) -> Path | None:
-    manifest = manifest_path(name)
-    if manifest is None or not manifest.is_file():
-        return None
+    for folder in model_dirs():
+        model_file = _model_file(name, folder)
+        if model_file is not None:
+            return model_file
+    return None
+
+
+def _model_file(name: str, folder: Path) -> Path | None:
+    manifest = manifest_path(name, folder)
     try:
+        if manifest is None or not manifest.is_file():
+            return None
         layers = json.loads(manifest.read_text())["layers"]
         digest = next(layer["digest"] for layer in layers if layer["mediaType"] == MODEL_LAYER)
+        model_file = folder / "blobs" / digest.replace(":", "-")
+        return model_file if model_file.is_file() else None
     except (OSError, json.JSONDecodeError, KeyError, TypeError, StopIteration):
         return None
-    model_file = models_dir() / "blobs" / digest.replace(":", "-")
-    return model_file if model_file.is_file() else None
 
 
 # Every model downloaded with Ollama, by the name Ollama shows for it, for "localtune sweep".
@@ -65,20 +84,29 @@ def find_ollama_model(name: str) -> Path | None:
 
 
 def downloaded_models() -> list[str]:
-    root = models_dir() / "manifests"
-    names, seen = [], set()
-    for manifest in sorted(root.glob("*/*/*/*")):
-        if not manifest.is_file():
+    found: dict[str, Path] = {}
+    for folder in model_dirs():
+        root = folder / "manifests"
+        try:
+            manifests = sorted(root.glob("*/*/*/*"))
+        except OSError:
             continue
-        registry, namespace, model, tag = manifest.relative_to(root).parts
-        if registry != DEFAULT_REGISTRY:
-            name = f"{registry}/{namespace}/{model}:{tag}"
-        elif namespace != DEFAULT_NAMESPACE:
-            name = f"{namespace}/{model}:{tag}"
-        else:
-            name = f"{model}:{tag}"
-        model_file = find_ollama_model(name)
-        if model_file is not None and model_file not in seen:
-            seen.add(model_file)
+        for manifest in manifests:
+            if not manifest.is_file():
+                continue
+            registry, namespace, model, tag = manifest.relative_to(root).parts
+            if registry != DEFAULT_REGISTRY:
+                name = f"{registry}/{namespace}/{model}:{tag}"
+            elif namespace != DEFAULT_NAMESPACE:
+                name = f"{namespace}/{model}:{tag}"
+            else:
+                name = f"{model}:{tag}"
+            model_file = _model_file(name, folder)
+            if name not in found and model_file is not None:
+                found[name] = model_file
+    names, seen = [], set()
+    for name in sorted(found):
+        if found[name] not in seen:
+            seen.add(found[name])
             names.append(name)
     return names

@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from localtune import ollama_models
 from localtune.ollama_models import downloaded_models, find_ollama_model, manifest_path
 
 
@@ -75,3 +76,25 @@ def test_lists_every_downloaded_model_once(ollama):
 
 def test_no_ollama_folder_means_no_models(ollama):
     assert downloaded_models() == []
+
+
+# Ollama's Linux installer keeps its models under its own "ollama" user, so those are found too,
+# and a model in both places is listed once.
+def test_finds_models_in_ollamas_linux_service_folder(tmp_path, monkeypatch):
+    service = tmp_path / "service"
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+    monkeypatch.setattr(ollama_models.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(ollama_models, "LINUX_SERVICE_DIR", service)
+    monkeypatch.setattr(ollama_models.sys, "platform", "linux")
+    model_file = add_model(service, ["registry.ollama.ai", "library", "qwen3", "14b"])
+    add_model(service, ["registry.ollama.ai", "library", "qwen3", "8b"], digest="sha256:b")
+    add_model(
+        tmp_path / "home" / ".ollama" / "models",
+        ["registry.ollama.ai", "library", "qwen3", "8b"],
+        digest="sha256:b",
+    )
+    assert find_ollama_model("qwen3:14b") == model_file
+    assert downloaded_models() == ["qwen3:14b", "qwen3:8b"]
+
+    monkeypatch.setattr(ollama_models.sys, "platform", "win32")
+    assert find_ollama_model("qwen3:14b") is None

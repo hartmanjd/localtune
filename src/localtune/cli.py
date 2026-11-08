@@ -122,6 +122,7 @@ from localtune.samples import (
     load_answers,
     load_questions,
     models_that_fit,
+    ollama_has,
     samples_file,
     save_answer,
     score,
@@ -2020,7 +2021,14 @@ def samples(
 
 def ask_model(url, model: str, questions, done: set, keep: bool, place: str) -> None:
     downloaded_here = False
-    if find_ollama_model(model) is None:
+    try:
+        had = ollama_has(url, model)
+    except AskError as error:
+        console.print(
+            f"{place}: skipping {model}, Ollama didn't say which models it has ({error})."
+        )
+        return
+    if not had:
         if not download_for_samples(url, model, place):
             return
         downloaded_here = True
