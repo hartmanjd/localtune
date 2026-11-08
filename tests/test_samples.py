@@ -98,14 +98,16 @@ class Reply(io.BytesIO):
         self.close()
 
 
-def pretend_ollama(monkeypatch, thinking=False, content="Answer: 14"):
+def pretend_ollama(monkeypatch, thinking=False, content="Answer: 14", has=()):
     sent = []
 
     def urlopen(request, timeout=None):
         body = json.loads(request.data) if request.data else {}
         path = request.full_url.split("11434", 1)[1]
         sent.append((path, request.get_method(), body))
-        if path == "/api/show":
+        if path == "/api/tags":
+            reply = {"models": [{"name": name, "model": name} for name in has]}
+        elif path == "/api/show":
             reply = {"capabilities": ["completion", "thinking"] if thinking else ["completion"]}
         elif path == "/api/chat":
             reply = {
@@ -137,9 +139,8 @@ def test_asks_with_a_fixed_seed(monkeypatch):
 
 def test_samples_asks_every_question_and_carries_on(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
-    sent = pretend_ollama(monkeypatch)
+    sent = pretend_ollama(monkeypatch, has=["qwen3:8b"])
     monkeypatch.setattr(cli, "is_running", lambda url: True)
-    monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "blob")
     result = runner.invoke(cli.app, ["samples", "qwen3:8b"])
     assert result.exit_code == 0, result.output
     assert len(load_answers()) == 20
@@ -154,11 +155,39 @@ def test_samples_asks_every_question_and_carries_on(monkeypatch, tmp_path):
 
 def test_samples_deletes_only_what_it_downloaded(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
-    sent = pretend_ollama(monkeypatch)
+    sent = pretend_ollama(monkeypatch, has=["qwen3:8b"])
     monkeypatch.setattr(cli, "is_running", lambda url: True)
-    monkeypatch.setattr(cli, "find_ollama_model", lambda name: None)
     monkeypatch.setattr(cli, "download_for_samples", lambda url, model, place: True)
     result = runner.invoke(cli.app, ["samples", "gemma3:1b"])
     assert result.exit_code == 0, result.output
     deleted = [body["model"] for path, method, body in sent if path == "/api/delete"]
     assert deleted == ["gemma3:1b"]
+
+
+# On Linux, Ollama's own installer keeps models in a folder localtune doesn't read by default,
+# so only Ollama's own list says whether a model was there before.
+def test_never_deletes_a_model_ollama_already_had(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
+    sent = pretend_ollama(monkeypatch, has=["llama3.2:latest"])
+    monkeypatch.setattr(cli, "is_running", lambda url: True)
+    monkeypatch.setattr(cli, "download_for_samples", lambda url, model, place: True)
+    result = runner.invoke(cli.app, ["samples", "llama3.2"])
+    assert result.exit_code == 0, result.output
+    assert not any(path == "/api/delete" for path, _, _ in sent)
+
+
+def test_skips_a_model_when_ollama_wont_list_its_models(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
+    pretend_ollama(monkeypatch)
+
+    def broken(url, path, body, timeout_s=60, method="POST"):
+        raise samples.AskError("busy")
+
+    monkeypatch.setattr(cli, "is_running", lambda url: True)
+    monkeypatch.setattr(samples, "call", broken)
+    downloads = []
+    monkeypatch.setattr(cli, "download_for_samples", lambda *a: downloads.append(a) or True)
+    result = runner.invoke(cli.app, ["samples", "gemma3:1b"])
+    assert result.exit_code == 0, result.output
+    assert "skipping gemma3:1b" in result.output
+    assert downloads == []
