@@ -82,6 +82,7 @@ def trained_for_run(run: RunResult) -> float | None:
 # RAM speed, the model's starting point. When the model doesn't all fit on the GPU, it is split the
 # way the formula assumes: a dense model keeps as many of its layers on the GPU as fit, a
 # mixture-of-experts model keeps every layer there and moves just enough layers' experts to RAM.
+# Nothing moved is 0, as llama.cpp reports it on every saved run, not a missing value.
 
 
 def planned_run(
@@ -123,7 +124,7 @@ def planned_run(
 
 def split(facts: ModelFacts, in_ram: float) -> dict:
     if in_ram <= 0:
-        return {"gpu_layers": -1}
+        return {"gpu_layers": -1, "cpu_moe_layers": 0}
     if facts.experts and facts.experts_used:
         unused = 1 - facts.experts_used / facts.experts
         experts_per_layer = (
@@ -132,4 +133,4 @@ def split(facts: ModelFacts, in_ram: float) -> dict:
         moved = min(facts.layers, math.ceil(in_ram / experts_per_layer))
         return {"gpu_layers": -1, "cpu_moe_layers": moved}
     on_gpu = math.floor(facts.layers * (1 - in_ram / facts.file_bytes))
-    return {"gpu_layers": max(0, on_gpu)}
+    return {"gpu_layers": max(0, on_gpu), "cpu_moe_layers": 0}
