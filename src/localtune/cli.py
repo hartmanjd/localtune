@@ -654,6 +654,9 @@ def run(
     else:
         llama_bench, model_file, model_name = prepare_llama_cpp(model, kv_cache)
         background = warn_if_busy(gpu)
+        if gpu_layers is None and cpu_moe is None:
+            split = starting_split(model_file, gpu, prompt_tokens + gen_tokens, kv_cache)
+            gpu_layers, cpu_moe = split.get("gpu_layers"), split.get("cpu_moe_layers")
         options = BenchOptions(
             prompt_tokens=prompt_tokens,
             gen_tokens=gen_tokens,
@@ -754,6 +757,34 @@ def show_memory_meter(gpu: int) -> str | None:
     if first is None or not is_busy(first):
         return None
     return wait_for_room(read, gpus[gpu].vram_gb, console, gpu_programs(nvidia_smi, gpu))
+
+
+# A model bigger than the GPU's memory is run from tune's first guess at a split (tune.py), not
+# all on the GPU: there, Windows' NVIDIA driver moves the overflow into RAM, where the GPU reads
+# it several times slower than from a split made on purpose, and Linux runs out of memory. The
+# guess is worked out from the model file's layout and the GPU's memory, without test runs, so
+# 'localtune tune' can still find a faster split near it. --gpu-layers or --cpu-moe given by
+# hand are used as they are, so a run all on the GPU can still be measured.
+
+
+def starting_split(model_file: Path, gpu: int, tokens: int, kv_cache: str | None) -> dict:
+    gpus = detect_hardware().gpus
+    if gpu >= len(gpus):
+        return {}
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError):
+        return {}
+    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    on_gpu = first_guess(size, layout, vram_gb, tokens, kv_cache or "f16")
+    if on_gpu is None:
+        return {}
+    console.print(
+        f"The model ({size / 1024**3:.1f} GB) doesn't all fit in the GPU's memory "
+        f"({vram_gb:.0f} GB), so this run keeps {describe_split(on_gpu, layout)}. "
+        "'localtune tune' tries splits near it to find the fastest."
+    )
+    return split_settings(on_gpu, layout)
 
 
 # For llama.cpp: the model is a file, or a model Ollama downloaded (ollama_models.py), which

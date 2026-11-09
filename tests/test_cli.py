@@ -1083,6 +1083,28 @@ def test_sweep_starts_a_model_too_big_for_the_gpu_from_a_split(monkeypatch, tmp_
     assert (asked[0].gpu_layers, asked[0].cpu_moe_layers) == (49, 27)
 
 
+def test_run_starts_a_model_too_big_for_the_gpu_from_a_split(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    model.write_bytes(b"x" * 4800)
+    layout = ModelLayout(layers=48, experts=128, expert_share=0.9)
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    small_gpu = FAKE_PC.gpus[0].model_copy(update={"vram_gb": RESERVED_GB + 2400 / 1024**3})
+    monkeypatch.setattr(
+        cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
+    )
+    result = runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    assert (asked[0].gpu_layers, asked[0].cpu_moe_layers) == (49, 27)
+    assert "experts in RAM for 27 of 48 layers" in " ".join(result.output.split())
+    runner.invoke(cli.app, ["run", str(model), "--gpu-layers", "99", "--price", "0.20"])
+    assert (asked[1].gpu_layers, asked[1].cpu_moe_layers) == (99, None)
+
+
 def test_sweep_keeps_the_finished_runs_when_stopped(monkeypatch, tmp_path):
     calls = itertools.count()
 
