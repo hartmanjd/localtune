@@ -69,8 +69,11 @@ def test_a_model_too_big_for_the_gpu_is_split():
     assert moe["settings.gpu_layers"] == -1
     assert 0 < moe["settings.cpu_moe_layers"] < moe["model_facts.layers"]
     dense = model_facts("qwen3:14b")
-    assert split(dense, 0) == {"gpu_layers": -1}
-    assert split(dense, dense.file_bytes / 2) == {"gpu_layers": dense.layers // 2}
+    assert split(dense, 0) == {"gpu_layers": -1, "cpu_moe_layers": 0}
+    assert split(dense, dense.file_bytes / 2) == {
+        "gpu_layers": dense.layers // 2,
+        "cpu_moe_layers": 0,
+    }
 
 
 def test_the_shipped_model_matches_this_version(tmp_path, monkeypatch):
