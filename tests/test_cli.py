@@ -1215,6 +1215,22 @@ def test_run_shows_the_estimate_beside_the_measured_speed(monkeypatch, tmp_path)
     assert "Decode, trained model guess" in result.output
 
 
+def test_a_run_that_overflowed_the_gpu_is_explained_instead_of_compared(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    fake_run(monkeypatch, tmp_path, example_run)
+    small = FAKE_PC.gpus[0].model_copy(update={"name": "NVIDIA GeForce RTX 4060", "vram_gb": 8.0})
+    small_pc = FAKE_PC.model_copy(update={"gpus": [small]})
+    monkeypatch.setattr(cli, "detect_hardware", lambda: small_pc)
+    monkeypatch.setattr(base, "detect_hardware", lambda: small_pc)
+    monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
+    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    said = " ".join(result.output.split())
+    assert "Decode, measured" in said
+    assert "Decode, formula guess" not in said
+    assert "bigger than the GPU's memory" in said
+    assert "localtune tune qwen3:14b" in said
+
+
 def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
