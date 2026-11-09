@@ -21,8 +21,8 @@ from pathlib import Path
 from localtune.features import FEATURES, inputs, number
 from localtune.gpus import GpuSpec
 from localtune.hardware import HardwareInfo
-from localtune.predict import Prediction
-from localtune.results import ModelFacts, RunSettings, flatten, home_dir
+from localtune.predict import Prediction, estimate_for
+from localtune.results import ModelFacts, RunResult, RunSettings, flat_record, flatten, home_dir
 from localtune.runners.llamacpp import DEPTH_FROM
 from localtune.tune import DEFAULT_UBATCH
 
@@ -60,6 +60,18 @@ def trained_estimate(row: dict) -> float | None:
 
     data = xgboost.DMatrix(np.array([inputs(row)]), feature_names=FEATURES)
     return estimate * math.exp(float(model.predict(data)[0]))
+
+
+# A finished run's own guess, from the run as it was saved: the same row the model was trained on
+# (scripts/combine_runs.py), so 'localtune run' can show it beside the measured speed.
+
+
+def trained_for_run(run: RunResult) -> float | None:
+    row = flat_record(run) | {
+        "estimate.decode_tok_s": estimate_for(run),
+        "estimate.own_ram_decode_tok_s": estimate_for(run, own_ram=True),
+    }
+    return trained_estimate(row)
 
 
 # 'localtune predict' asks about a run that hasn't happened, so it is described as a row shaped

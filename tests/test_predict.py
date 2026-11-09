@@ -52,7 +52,8 @@ def test_predict_for_a_named_gpu():
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
     assert result.exit_code == 0
     assert "Yes, all of it" in result.output
-    assert "about 40 tok/s (formula)" in result.output
+    assert "Decode, formula guess" in result.output
+    assert "about 40 tok/s" in result.output
     assert "localtune run qwen3:14b" in result.output
     assert "ollama pull" not in result.output
 
@@ -82,7 +83,7 @@ def test_predict_for_this_computers_gpu(monkeypatch):
     monkeypatch.setattr(cli, "detect_hardware", lambda: pc)
     result = runner.invoke(cli.app, ["predict", "llama3.1:405b"])
     assert result.exit_code == 0
-    assert "Writing speed" not in result.output
+    assert "formula guess" not in result.output
     assert "localtune run" not in result.output
 
 

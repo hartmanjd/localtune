@@ -1210,8 +1210,9 @@ def test_run_shows_the_estimate_beside_the_measured_speed(monkeypatch, tmp_path)
     monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
     result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
-    assert "Decode estimate" in result.output
-    assert "from 'localtune predict'" in result.output
+    assert "Decode, measured" in result.output
+    assert "Decode, formula guess" in result.output
+    assert "Decode, trained model guess" in result.output
 
 
 def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
