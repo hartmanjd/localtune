@@ -119,17 +119,37 @@ def predict(
 
 
 def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
+    p = prediction_for(run)
+    if p is None or not own_ram:
+        return None if p is None else p.decode_tok_s
+    facts, gpu, speed, s = run.model_facts, run.gpu_facts, run.speed, run.settings
+    tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
+    return own_ram_estimate(
+        facts, gpu, run.hardware, tokens, s.threads, s.gpu_layers, s.cpu_moe_layers
+    )
+
+
+def prediction_for(run: RunResult) -> Prediction | None:
     facts, gpu, speed = run.model_facts, run.gpu_facts, run.speed
     if facts is None or gpu is None or speed is None:
         return None
     file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
-    if not own_ram:
-        return predict(facts, file, gpu, tokens, run.hardware.ram_gb).decode_tok_s
-    s = run.settings
-    return own_ram_estimate(
-        facts, gpu, run.hardware, tokens, s.threads, s.gpu_layers, s.cpu_moe_layers
-    )
+    return predict(facts, file, gpu, tokens, run.hardware.ram_gb)
+
+
+# Both estimates assume a model too big for the GPU is split well between the GPU and RAM. A
+# run told to keep all of it on the GPU anyway (no --gpu-layers or --cpu-moe) doesn't fail on
+# Windows: the NVIDIA driver quietly moves the overflow into the computer's RAM, where the GPU
+# reaches it slowly over the PCIe slot, often several times slower than a split. Such a run
+# measures something the estimates don't describe.
+
+
+def overflowed_gpu(run: RunResult) -> bool:
+    p, facts = prediction_for(run), run.model_facts
+    if p is None or facts is None or p.in_ram_gb <= 0:
+        return False
+    return kept_in_ram(facts, run.settings.gpu_layers, run.settings.cpu_moe_layers) == 0
 
 
 def own_ram_estimate(
