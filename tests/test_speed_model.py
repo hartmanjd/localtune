@@ -83,7 +83,7 @@ def test_without_a_saved_model_the_shipped_one_guesses(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
     assert 30 < trained_estimate(planned("qwen3:14b", 512, 256)) < 100
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
-    assert "Trained model" in result.output
+    assert "trained model guess" in result.output
 
 
 def test_predict_shows_the_saved_model_beside_the_formula(tmp_path, monkeypatch):
@@ -91,6 +91,7 @@ def test_predict_shows_the_saved_model_beside_the_formula(tmp_path, monkeypatch)
     train.save(made_up_runs())
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
     assert result.exit_code == 0
-    assert "about 40 tok/s (formula)" in result.output
-    assert "Trained model" in result.output
+    assert "Decode, formula guess" in result.output
+    assert "about 40 tok/s" in result.output
+    assert "trained model guess" in result.output
     assert "about 60 tok/s" in result.output

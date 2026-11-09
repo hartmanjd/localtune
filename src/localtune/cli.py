@@ -140,7 +140,7 @@ from localtune.share import (
     write_preview,
 )
 from localtune.side_by_side import run_tuned_server, unload_from_ollama
-from localtune.speed_model import planned_run, trained_estimate
+from localtune.speed_model import planned_run, trained_estimate, trained_for_run
 from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
@@ -357,15 +357,16 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
     if p.decode_tok_s is not None:
-        table.add_row("Writing speed", f"about {p.decode_tok_s:,.0f} tok/s (formula)")
+        table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
-        table.add_row("Trained model", f"about {trained:,.0f} tok/s (prediction)")
+        table.add_row("Decode, trained model guess", f"about {trained:,.0f} tok/s")
     console.print(table)
     if p.decode_tok_s is None:
         return
     console.print(
-        "This is an estimate from the GPU's memory speed and the model's size, not a "
-        "measurement."
+        "Decode is the writing speed. These are guesses, not measurements: the formula works it "
+        "out from the GPU's memory speed and the model's size, and the trained model learned "
+        "from real runs."
         + (" It assumes a good GPU/RAM split, which 'localtune tune' finds." if p.in_ram_gb else "")
     )
     downloaded = find_ollama_model(p.model) is not None
@@ -892,10 +893,13 @@ def show_run(result: RunResult) -> None:
     if speed.prefill_tok_s is not None:
         table.add_row("Prefill", f"{speed.prefill_tok_s:,.0f} tok/s")
     if speed.decode_tok_s is not None:
-        table.add_row("Decode", f"{speed.decode_tok_s:,.1f} tok/s")
+        table.add_row("Decode, measured", f"{speed.decode_tok_s:,.1f} tok/s")
         estimate = estimate_for(result)
         if estimate is not None:
-            table.add_row("Decode estimate", f"{estimate:,.0f} tok/s (from 'localtune predict')")
+            table.add_row("Decode, formula guess", f"about {estimate:,.0f} tok/s")
+        trained = trained_for_run(result)
+        if trained is not None:
+            table.add_row("Decode, trained model guess", f"about {trained:,.0f} tok/s")
     if speed.ttft_ms is not None:
         table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
     if gpu is not None:
