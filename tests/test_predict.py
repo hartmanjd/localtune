@@ -201,7 +201,7 @@ def test_a_search_with_no_match_says_so():
 
 def test_predict_says_the_biggest_context_that_fits():
     result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
-    assert "Biggest context at full speed" in result.output
+    assert "Biggest context, formula guess" in result.output
     assert "model limit 40,960" in result.output
 
 

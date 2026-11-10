@@ -241,5 +241,5 @@ def test_predict_shows_a_size_proven_on_this_computer(monkeypatch):
     monkeypatch.setattr(cli, "rig_id", lambda: "rig")
     save_proof(a_proof())
     result = runner.invoke(cli.app, ["predict", "qwen3:14b"])
-    assert "Proven on this computer" in result.output
+    assert "Biggest context, measured" in result.output
     assert "30,720 tokens" in result.output

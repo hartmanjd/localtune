@@ -403,11 +403,11 @@ def show_prediction(
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
     if room is not None:
-        table.add_row("Biggest context at full speed", context_text(room, model_limit))
+        table.add_row("Biggest context, formula guess", context_text(room, model_limit))
     elif model_limit:
         table.add_row("Model's context limit", f"{model_limit:,} tokens")
     if proven is not None:
-        table.add_row("Proven on this computer", f"{proven:,} tokens ('localtune context')")
+        table.add_row("Biggest context, measured", f"{proven:,} tokens")
     if p.decode_tok_s is not None:
         table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
@@ -432,6 +432,9 @@ def show_prediction(
         "To measure it for real" + (":" if downloaded else ", downloading the model first:")
     )
     console.print(f"  localtune run {p.model}", markup=False, highlight=False)
+    if room is not None and proven is None and cards == 1:
+        console.print("To measure the biggest context:")
+        console.print(f"  localtune context {p.model}", markup=False, highlight=False)
 
 
 # "localtune models" and "localtune gpus": the two tables predict reads (models.py, gpus.py),
@@ -972,18 +975,22 @@ def peak_vram_text(gpu: GpuSummary) -> str:
 # there (tune.biggest_context), at the run's own KV cache type.
 
 
+def kv_cache_of(result: RunResult) -> str:
+    kv_cache = result.settings.kv_cache_k
+    return kv_cache if kv_cache in KV_CACHE_SIZE else "f16"
+
+
 def run_context_room(result: RunResult) -> int | None:
     facts, cards = result.model_facts, result.gpu.cards if result.gpu else []
     gpus = [g for g in result.hardware.gpus if g.index in (cards or [result.gpu_index])]
     if facts is None or not gpus:
         return None
-    kv_cache = result.settings.kv_cache_k
     return biggest_context(
         facts.file_bytes,
         kv_bytes_per_token(facts),
         shared_vram_gb(gpus),
         facts.context_length,
-        kv_cache if kv_cache in KV_CACHE_SIZE else "f16",
+        kv_cache_of(result),
     )
 
 
@@ -1010,7 +1017,10 @@ def show_run(result: RunResult) -> None:
         room = run_context_room(result)
         if room is not None:
             limit = result.model_facts.context_length
-            table.add_row("Biggest context at full speed", context_text(room, limit))
+            table.add_row("Biggest context, formula guess", context_text(room, limit))
+            proof = latest_proof(result.rig_id, settings.model, kv_cache_of(result))
+            if proof and proof.proven_context:
+                table.add_row("Biggest context, measured", f"{proof.proven_context:,} tokens")
         if gpu.avg_power_w is not None:
             power = f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak"
             idle = result.background.gpu_power_w if result.background else None
