@@ -120,12 +120,15 @@ def digest_of(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def library(monkeypatch, tmp_path, files=None, broken_after=None, ranges=True):
+def library(monkeypatch, tmp_path, files=None, broken_after=None, ranges=True, config_size=None):
     monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path))
     files = files or {digest_of(MODEL_BYTES): MODEL_BYTES, digest_of(CONFIG_BYTES): CONFIG_BYTES}
     manifest = json.dumps(
         {
-            "config": {"digest": digest_of(CONFIG_BYTES), "size": len(CONFIG_BYTES)},
+            "config": {
+                "digest": digest_of(CONFIG_BYTES),
+                "size": config_size or len(CONFIG_BYTES),
+            },
             "layers": [
                 {
                     "mediaType": "application/vnd.ollama.image.model",
@@ -204,6 +207,28 @@ def test_fetch_carries_on_after_the_connection_breaks(monkeypatch, tmp_path):
         "bytes=1000-",
     ) in asked
     assert find_ollama_model("qwen3:14b").read_bytes() == MODEL_BYTES
+
+
+def test_fetch_carries_on_after_the_connection_closes_early(monkeypatch, tmp_path):
+    short = {digest_of(MODEL_BYTES): MODEL_BYTES[:1000], digest_of(CONFIG_BYTES): CONFIG_BYTES}
+    library(monkeypatch, tmp_path, files=short)
+    with pytest.raises(PullError, match="carry on"):
+        fetch("qwen3:14b", lambda *a: None)
+    asked = library(monkeypatch, tmp_path)
+    fetch("qwen3:14b", lambda *a: None)
+    assert (
+        "https://registry.ollama.ai/v2/library/qwen3/blobs/" + digest_of(MODEL_BYTES),
+        "bytes=1000-",
+    ) in asked
+    assert find_ollama_model("qwen3:14b").read_bytes() == MODEL_BYTES
+
+
+def test_fetch_keeps_a_file_whose_listed_size_is_off(monkeypatch, tmp_path):
+    asked = library(monkeypatch, tmp_path, config_size=len(CONFIG_BYTES) - 3)
+    fetch("qwen3:14b", lambda *a: None)
+    assert find_ollama_model("qwen3:14b").read_bytes() == MODEL_BYTES
+    assert not list(tmp_path.rglob("*partial*"))
+    assert len(asked) == 3
 
 
 def test_fetch_starts_over_when_the_library_sends_the_whole_file(monkeypatch, tmp_path):
