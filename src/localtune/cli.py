@@ -40,6 +40,15 @@ from localtune import __version__
 from localtune.animations import left_words, play_logo, span_words, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
+from localtune.context_check import (
+    MAX_TRIES,
+    ContextProof,
+    ContextTry,
+    latest_proof,
+    load_and_measure,
+    prove,
+    save_proof,
+)
 from localtune.cpus import ram_bandwidth_gbs
 from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.eta import SweepClock, guess_run, pace, raw_seconds
@@ -356,7 +365,9 @@ def predict_command(
         own_ram = predict(*found, spec, tokens, hw.ram_gb, ram_bandwidth)
         planned = planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens, own_ram)
         trained = trained_estimate(planned)
-    show_prediction(p, use, trained, room, cards, table_model.context_length)
+    proof = None if gpu_name else latest_proof(rig_id(), model)
+    proven = proof.proven_context if proof else None
+    show_prediction(p, use, trained, room, cards, table_model.context_length, proven)
 
 
 def context_text(tokens: int, model_limit: int | None = None) -> str:
@@ -373,6 +384,7 @@ def show_prediction(
     room: int | None = None,
     cards: int = 1,
     model_limit: int | None = None,
+    proven: int | None = None,
 ) -> None:
     on = p.gpu if cards == 1 else f"{cards} GPUs ({p.gpu} first)"
     table = Table(title=f"Estimate for {p.model} on {on}", show_header=False)
@@ -394,6 +406,8 @@ def show_prediction(
         table.add_row("Biggest context at full speed", context_text(room, model_limit))
     elif model_limit:
         table.add_row("Model's context limit", f"{model_limit:,} tokens")
+    if proven is not None:
+        table.add_row("Proven on this computer", f"{proven:,} tokens ('localtune context')")
     if p.decode_tok_s is not None:
         table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
@@ -2032,6 +2046,114 @@ def show_sweep(runs: list[tuple[str, RunResult]]) -> None:
 # use's conversation (--use, uses.py, rounded up like llama-server's room for it), or a length
 # given with --context. A model too big for the GPU starts from tune's first guess at a GPU/RAM
 # split, like sweep, unless one is given. Each result is saved as soon as it finishes.
+
+
+# "localtune context": proves the biggest context for a model on this computer by loading it at
+# that size and reading the GPU's memory (context_check.py), starting from the size the formula
+# gives (tune.biggest_context). Each try takes as long as loading the model.
+
+
+@app.command("context")
+def context_command(
+    model: Annotated[str, typer.Argument(help="Model file (.gguf), or an Ollama model name.")],
+    kv_cache: str = typer.Option("f16", help="KV cache type: f16, q8_0 or q4_0."),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+) -> None:
+    """Prove the biggest context a model can have with all of it on the GPU."""
+    llama_server = find_tool("llama-server")
+    if llama_server is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    if kv_cache not in KV_CACHE_SIZE:
+        console.print(f"Unknown KV cache type {kv_cache}. Choose from: {', '.join(KV_CACHE_SIZE)}")
+        raise typer.Exit(1)
+    model_file, model_name = find_or_download(model)
+    if model_file is None:
+        explain_missing_model(model)
+        raise typer.Exit(1)
+    gpus = detect_hardware().gpus
+    if gpu >= len(gpus):
+        console.print("No NVIDIA GPU found, so there is no GPU memory to check.")
+        raise typer.Exit(1)
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError) as error:
+        console.print(f"Can't read {model_file.name}: {error}", markup=False)
+        raise typer.Exit(1) from error
+    size = model_file.stat().st_size
+    formula = biggest_context(
+        size, layout.kv_bytes_per_token, shared_vram_gb(gpus, gpu), layout.context_length, kv_cache
+    )
+    name = model_name or model_file.name
+    if formula is None:
+        console.print(
+            f"{name} doesn't fit on the GPU with room for a conversation, or its file doesn't say "
+            "how much memory a conversation takes, so there is no size to prove.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    console.print(
+        f"The formula says about {formula:,} tokens. Loading {name} to check it; each try takes "
+        "as long as loading the model.",
+        markup=False,
+    )
+    number = 0
+
+    def try_context(context: int) -> ContextTry:
+        nonlocal number
+        number += 1
+        label = f"Try {number} of at most {MAX_TRIES}: loading with {context:,} tokens..."
+        with working(console, "run", label):
+            return load_and_measure(llama_server, model_file, context, kv_cache, gpus, gpu)
+
+    proven, tries = prove(
+        try_context, formula, layout.kv_bytes_per_token, kv_cache, layout.context_length
+    )
+    proof = ContextProof(
+        rig_id=rig_id(),
+        model=name,
+        kv_cache=kv_cache,
+        formula_context=formula,
+        proven_context=proven,
+        tries=tries,
+    )
+    path = save_proof(proof)
+    show_context_proof(proof, layout.context_length)
+    console.print(f"Saved to {path}")
+    if proven is None:
+        raise typer.Exit(1)
+
+
+def show_context_proof(proof: ContextProof, model_limit: int | None) -> None:
+    table = Table(title=f"Biggest context for {proof.model}")
+    for column in ("Context", "Loaded", "Peak VRAM", "Free on the fullest GPU", "Result"):
+        table.add_column(column, justify="right" if column != "Result" else "left")
+    for tried in proof.tries:
+        if not tried.loaded:
+            result = "[red]didn't load[/red]"
+        elif tried.proven:
+            result = "[green]fits with room[/green]"
+        else:
+            result = "[yellow]too full[/yellow]"
+        table.add_row(
+            f"{tried.context:,}",
+            "yes" if tried.loaded else "no",
+            f"{tried.peak_vram_gb:.1f} GB" if tried.peak_vram_gb is not None else "",
+            f"{tried.free_gb:.1f} GB" if tried.free_gb is not None else "",
+            result,
+        )
+    console.print(table)
+    if proof.proven_context is None:
+        console.print(
+            "No size could be proven. Closing other programs that use the GPU frees memory; "
+            "then run this again."
+        )
+        return
+    console.print(
+        f"[green]Proven:[/green] {context_text(proof.proven_context, model_limit)} with the whole "
+        f"model on the GPU and at least {SPILL_MARGIN_GB:g} GB left free. "
+        f"The formula said about {proof.formula_context:,}."
+    )
 
 
 @app.command()
