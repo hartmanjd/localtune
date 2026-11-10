@@ -108,7 +108,8 @@ def predict(
 # (results.py), so "localtune run", "tune", "sweep" and "results" can show it beside the real
 # speed: how far off the simple formula was, for this model on this computer. It is worked out
 # for the run's own conversation length. Runs saved before the facts were kept, or with a model
-# or GPU not in the tables, have no estimate.
+# or GPU not in the tables, have no estimate. Neither has a run spread over several GPUs
+# (gpu_monitor.py): the estimates describe one GPU, and no such run was ever learned from.
 #
 # The trained model (scripts/train.py) starts from a better version of it instead: the part of
 # the model in RAM is read at the RAM speed of the run's own CPU (cpus.py), with the threads
@@ -129,9 +130,13 @@ def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
     )
 
 
+def several_gpus(run: RunResult) -> bool:
+    return run.gpu is not None and len(run.gpu.cards) > 1
+
+
 def prediction_for(run: RunResult) -> Prediction | None:
     facts, gpu, speed = run.model_facts, run.gpu_facts, run.speed
-    if facts is None or gpu is None or speed is None:
+    if facts is None or gpu is None or speed is None or several_gpus(run):
         return None
     file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)

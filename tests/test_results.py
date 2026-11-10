@@ -1,16 +1,15 @@
-# Tests for the saved run record. They build runs from made-up numbers chosen so the energy and
-# cost answers are easy to check by hand, and save them into a temporary folder instead of the
+# Tests for the saved run record. They build runs from made-up numbers chosen so the
+# energy answers are easy to check by hand, and save them into a temporary folder instead of the
 # real one in your home directory.
+
+import json
 
 import pytest
 
 from localtune import results
-from localtune.cost import ElectricityPrice
 from localtune.gpu_monitor import GpuSummary
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import RunResult, RunSettings, Speed
-
-PRICE = ElectricityPrice(per_kwh=0.20, kind="state", source="OH average, EIA 2026-08")
 
 HARDWARE = HardwareInfo(
     os="Linux 6.6",
@@ -57,32 +56,28 @@ def make_run(**changes) -> RunResult:
         hardware=HARDWARE,
         speed=SPEED,
         gpu=gpu,
-        energy=results.energy_and_cost(gpu, SPEED, PRICE),
+        energy=results.energy_used(gpu, SPEED),
     )
     return RunResult(**{**fields, **changes})
 
 
-def test_energy_and_cost_per_million_tokens():
-    energy = results.energy_and_cost(gpu_summary(50), SPEED, PRICE)
+def test_energy_per_million_tokens():
+    energy = results.energy_used(gpu_summary(50), SPEED)
     assert energy.kwh == pytest.approx(0.05)
     assert energy.kwh_per_million_tokens == pytest.approx(0.2)
-    assert energy.cost == pytest.approx(0.01)
-    assert energy.cost_per_million_tokens == pytest.approx(0.04)
-    assert energy.price == PRICE
 
 
 def test_busy_time_leaves_out_model_loading():
     # 300 W busy for 60 s = 5 Wh, even though the whole run (loading included) used 50 Wh.
     gpu = gpu_summary(50).model_copy(update={"busy_avg_power_w": 300})
     speed = SPEED.model_copy(update={"busy_s": 60})
-    assert results.energy_and_cost(gpu, speed, PRICE).kwh == pytest.approx(0.005)
+    assert results.energy_used(gpu, speed).kwh == pytest.approx(0.005)
 
 
-def test_no_power_reading_keeps_the_price_but_no_cost():
-    energy = results.energy_and_cost(gpu_summary(None), SPEED, PRICE)
+def test_no_power_reading_means_no_energy():
+    energy = results.energy_used(gpu_summary(None), SPEED)
     assert energy.kwh is None
-    assert energy.cost is None
-    assert energy.price == PRICE
+    assert energy.kwh_per_million_tokens is None
 
 
 def test_saved_runs_come_back_the_same():
@@ -98,7 +93,7 @@ def test_failed_runs_are_saved_too():
         error="CUDA out of memory",
         speed=None,
         gpu=None,
-        energy=results.energy_and_cost(None, None, PRICE),
+        energy=results.energy_used(None, None),
     )
     results.save_result(failed)
     assert results.load_results() == [failed]
@@ -126,3 +121,23 @@ def test_each_run_records_its_version_and_time():
 
 def test_rig_id_stays_the_same_on_one_computer():
     assert results.rig_id() == results.rig_id()
+
+
+# Runs saved before the electricity price was dropped carry a cost and a price; a shared file
+# never had them. Both must still load.
+
+
+def test_runs_with_or_without_the_old_price_fields_still_load():
+    old = json.loads(make_run().model_dump_json())
+    old["energy"] |= {
+        "cost": 0.01,
+        "cost_per_million_tokens": 0.04,
+        "price": {"per_kwh": 0.2, "currency": "USD", "kind": "zip", "source": "zip 43210"},
+    }
+    shared = json.loads(make_run().model_dump_json())
+    path = results.results_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old) + "\n" + json.dumps(shared) + "\n", encoding="utf-8")
+    loaded = results.load_results()
+    assert len(loaded) == 2
+    assert "43210" not in loaded[0].model_dump_json()

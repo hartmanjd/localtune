@@ -20,6 +20,7 @@ class ModelLayout(BaseModel):
     experts: int | None
     expert_share: float  # how much of the model's weights are experts, from 0 to 1
     kv_bytes_per_token: int = 0  # at full quality (f16); 0 if the file doesn't say
+    context_length: int | None = None  # the longest conversation the model was built for
 
 
 class GgufError(Exception):
@@ -127,4 +128,5 @@ def read_layout(path: Path) -> ModelLayout:
         experts=meta.get(f"{arch}.expert_count") or None,
         expert_share=experts / total if total else 0.0,
         kv_bytes_per_token=kv_bytes_per_token(meta, arch, layers),
+        context_length=meta.get(f"{arch}.context_length") or None,
     )

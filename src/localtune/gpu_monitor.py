@@ -45,6 +45,8 @@ class GpuSummary(BaseModel):
     avg_utilization_pct: float
     peak_temperature_c: float
     busy_avg_sm_clock_mhz: float | None = None
+    cards: list[int] = []
+    card_peak_vram_gb: list[float] = []
 
 
 # Taking one reading. nvidia-smi is asked for five numbers about one GPU. Some GPUs don't
@@ -88,6 +90,68 @@ def read_sample(nvidia_smi: Path, gpu_index: int = 0) -> GpuSample | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return parse_sample(result.stdout, time.monotonic())
+
+
+# A computer can have several GPUs, and llama.cpp and Ollama spread a model over them by
+# themselves. So every card is read at once (one line of nvidia-smi's answer each), and after
+# the run the cards whose memory grew are the ones it used. Their readings are then added
+# together into one, as if they were a single bigger GPU: power and memory add up, while load,
+# temperature and clock speed are those of the busiest, hottest and slowest card.
+
+USED_CARD_GB = 0.3
+
+
+def parse_cards(text: str, time_s: float) -> dict[int, GpuSample]:
+    cards = {}
+    for line in text.strip().splitlines():
+        index, _, rest = line.partition(",")
+        sample = parse_sample(rest, time_s)
+        if sample is not None and index.strip().isdigit():
+            cards[int(index)] = sample
+    return cards
+
+
+def read_cards(nvidia_smi: Path) -> dict[int, GpuSample]:
+    try:
+        result = subprocess.run(
+            [
+                str(nvidia_smi),
+                f"--query-gpu=index,{SAMPLE_QUERY}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return parse_cards(result.stdout, time.monotonic())
+
+
+def together(samples: list[GpuSample]) -> GpuSample:
+    powers = [s.power_w for s in samples]
+    clocks = [s.sm_clock_mhz for s in samples if s.sm_clock_mhz is not None]
+    return GpuSample(
+        time_s=samples[0].time_s,
+        power_w=None if None in powers else sum(powers),
+        vram_used_gb=round(sum(s.vram_used_gb for s in samples), 2),
+        utilization_pct=max(s.utilization_pct for s in samples),
+        temperature_c=max(s.temperature_c for s in samples),
+        sm_clock_mhz=min(clocks) if clocks else None,
+    )
+
+
+def cards_used(
+    readings: list[dict[int, GpuSample]], baseline: dict[int, GpuSample], main: int
+) -> list[int]:
+    grew = [
+        card
+        for card, before in sorted(baseline.items())
+        if max((r[card].vram_used_gb for r in readings if card in r), default=0)
+        >= before.vram_used_gb + USED_CARD_GB
+    ]
+    return grew or [main]
 
 
 # Boiling many readings down to one summary. Energy is power added up over time: each gap
@@ -184,14 +248,18 @@ class GpuMonitor:
         interval_s: float = 0.5,
         gpu_index: int = 0,
         reader: Callable[[], GpuSample | None] | None = None,
+        cards_reader: Callable[[], dict[int, GpuSample]] | None = None,
     ):
         self.interval_s = interval_s
-        if reader is None:
+        self.gpu_index = gpu_index
+        if reader is not None:
+            cards_reader = lambda: {gpu_index: s} if (s := reader()) is not None else {}  # noqa: E731
+        elif cards_reader is None:
             nvidia_smi = find_nvidia_smi()
-            reader = (lambda: read_sample(nvidia_smi, gpu_index)) if nvidia_smi else lambda: None
-        self._read = reader
-        self.baseline: GpuSample | None = None
-        self.samples: list[GpuSample] = []
+            cards_reader = (lambda: read_cards(nvidia_smi)) if nvidia_smi else dict
+        self._read = cards_reader
+        self.baseline: dict[int, GpuSample] = {}
+        self.readings: list[dict[int, GpuSample]] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._watch, daemon=True)
 
@@ -206,11 +274,25 @@ class GpuMonitor:
 
     def _watch(self) -> None:
         while True:
-            sample = self._read()
-            if sample is not None:
-                self.samples.append(sample)
+            reading = self._read()
+            if reading:
+                self.readings.append(reading)
             if self._stop.wait(self.interval_s):
                 break
 
+    @property
+    def samples(self) -> list[GpuSample]:
+        return [r[self.gpu_index] for r in self.readings if self.gpu_index in r]
+
     def summary(self) -> GpuSummary | None:
-        return summarize(self.samples, self.baseline)
+        used = cards_used(self.readings, self.baseline, self.gpu_index)
+        whole = [r for r in self.readings if all(card in r for card in used)]
+        before = self.baseline if all(card in self.baseline for card in used) else None
+        summary = summarize(
+            [together([r[card] for card in used]) for r in whole],
+            together([before[card] for card in used]) if before else None,
+        )
+        if summary is None:
+            return None
+        peaks = [max(r[card].vram_used_gb for r in whole) for card in used]
+        return summary.model_copy(update={"cards": used, "card_peak_vram_gb": peaks})

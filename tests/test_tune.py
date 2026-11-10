@@ -2,14 +2,15 @@
 
 import pytest
 
-from localtune.cost import ElectricityPrice
 from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuSummary
 from localtune.hardware import GpuInfo, HardwareInfo
-from localtune.results import EnergyCost, RunResult, RunSettings, Speed
+from localtune.results import Energy, RunResult, RunSettings, Speed
 from localtune.tune import (
+    RESERVED_GB,
     answer_seconds,
     as_good_as,
+    biggest_context,
     combinations,
     default_run,
     describe,
@@ -20,11 +21,13 @@ from localtune.tune import (
     run_flags,
     server_context,
     server_flags,
+    shared_vram_gb,
     split_settings,
     too_full,
 )
 
 PC = HardwareInfo(os="Linux", is_wsl=False, cpu_name="CPU", cpu_threads=8, ram_gb=32.0, gpus=[])
+GIB = 1024**3
 GPU = GpuInfo(index=0, name="NVIDIA GeForce RTX 4070 Ti SUPER", vram_gb=16.0, driver_version="1")
 
 
@@ -47,7 +50,6 @@ def test_long_prompts_try_flash_attention_off_only_once_and_last():
 
 
 def a_run(decode, status="ok", prefill=5000.0, **settings):
-    price = ElectricityPrice(per_kwh=0.2, currency="USD", kind="yours", source="you")
     return RunResult(
         rig_id="rig",
         status=status,
@@ -56,13 +58,7 @@ def a_run(decode, status="ok", prefill=5000.0, **settings):
         speed=Speed(
             prompt_tokens=512, generated_tokens=128, prefill_tok_s=prefill, decode_tok_s=decode
         ),
-        energy=EnergyCost(
-            kwh=None,
-            kwh_per_million_tokens=None,
-            cost=None,
-            cost_per_million_tokens=None,
-            price=price,
-        ),
+        energy=Energy(kwh=None, kwh_per_million_tokens=None),
     )
 
 
@@ -242,3 +238,44 @@ def test_no_split_when_nothing_fits():
     try_split, tried = times(lambda n: None)
     assert find_best_split(try_split, 4, layers=40) is None
     assert tried == [4, 2, 0]
+
+
+# Two GPUs: what fits is judged by their memory together, and a run is too full as soon as one
+# of the cards is.
+
+SECOND_GPU = GPU.model_copy(update={"index": 1})
+
+
+def test_two_gpus_count_their_memory_together():
+    assert shared_vram_gb([GPU]) == 16.0
+    assert shared_vram_gb([GPU, SECOND_GPU]) == 32.0 - RESERVED_GB
+
+
+def test_a_run_over_two_gpus_is_too_full_when_either_card_is():
+    run = filled_to(a_run(100.0), 22.0)
+    run.hardware = PC.model_copy(update={"gpus": [GPU, SECOND_GPU]})
+    run.gpu = run.gpu.model_copy(update={"cards": [0, 1], "card_peak_vram_gb": [11.0, 11.0]})
+    assert not too_full(run)
+    run.gpu = run.gpu.model_copy(update={"card_peak_vram_gb": [15.5, 6.5]})
+    assert too_full(run)
+
+
+# The biggest context: a 9 GB model on a 16 GB GPU leaves 16 - 1.5 - 9 = 5.5 GB, and at 0.25 MB
+# a token that is 22,528 tokens, a whole number of thousands already.
+
+
+def test_biggest_context_is_what_is_left_over_the_memory_per_token():
+    assert biggest_context(9 * GIB, 262_144, 16.0) == 22_528
+
+
+def test_biggest_context_stops_at_what_the_model_was_built_for():
+    assert biggest_context(9 * GIB, 262_144, 16.0, model_limit=8192) == 8192
+
+
+def test_a_smaller_kv_cache_fits_a_longer_conversation():
+    assert biggest_context(9 * GIB, 262_144, 16.0, kv_cache="q8_0") > 40_000
+
+
+def test_no_biggest_context_when_the_model_doesnt_fit_or_the_file_doesnt_say():
+    assert biggest_context(15 * GIB, 262_144, 16.0) is None
+    assert biggest_context(9 * GIB, 0, 16.0) is None

@@ -2,7 +2,7 @@
 
 # Every benchmark run ends up as one RunResult: what was run (model, quantization, KV cache and
 # the other settings), on what (hardware.py), how fast it went, what the GPU did while it ran
-# (gpu_monitor.py), and the energy and money it took (cost.py, prices.py). All runs together
+# (gpu_monitor.py), and the energy it took. All runs together
 # form localtune's dataset: the results table shows it, tuning compares runs from it, and the
 # prediction models are trained on it. Because of that, a run that failed (out of memory, a
 # crash) is saved too, so the dataset also knows which settings don't work.
@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from localtune import __version__
 from localtune.background import Background
-from localtune.cost import ElectricityPrice, energy_cost
 from localtune.gpu_monitor import GpuSummary
 from localtune.gpus import GpuSpec, find_gpu_spec
 from localtune.hardware import HardwareInfo
@@ -66,44 +65,28 @@ class Speed(BaseModel):
     busy_s: float | None = None
 
 
-# What the electricity came to. Energy is measured by the GPU monitor; cost is that energy at
-# the price used, and the price is saved with where it came from. "Per million tokens" counts
-# every token the run handled (prompt and answer), the unit paid AI services also price in.
-# When the engine says how long it spent on the tokens, the energy is the GPU's busy power over
-# that time, so loading the model doesn't count against the tokens; otherwise it is the energy
-# of the whole run.
+# The electricity a run used. "Per million tokens" counts every token the run handled (prompt
+# and answer). When the engine says how long it spent on the tokens, the energy is the GPU's
+# busy power over that time, so loading the model doesn't count against the tokens; otherwise
+# it is the energy of the whole run. Runs saved by older versions also carry a cost and the
+# electricity price it came from; those are ignored when read.
 
 
-class EnergyCost(BaseModel):
+class Energy(BaseModel):
     kwh: float | None
     kwh_per_million_tokens: float | None
-    cost: float | None
-    cost_per_million_tokens: float | None
-    price: ElectricityPrice
 
 
-def energy_and_cost(
-    gpu: GpuSummary | None, speed: Speed | None, price: ElectricityPrice
-) -> EnergyCost:
+def energy_used(gpu: GpuSummary | None, speed: Speed | None) -> Energy:
     energy_wh = gpu.energy_wh if gpu else None
     if gpu and gpu.busy_avg_power_w is not None and speed and speed.busy_s:
         energy_wh = gpu.busy_avg_power_w * speed.busy_s / 3600
     tokens = speed.prompt_tokens + speed.generated_tokens if speed else 0
     if energy_wh is None:
-        return EnergyCost(
-            kwh=None,
-            kwh_per_million_tokens=None,
-            cost=None,
-            cost_per_million_tokens=None,
-            price=price,
-        )
-    cost = energy_cost(energy_wh, price)
-    return EnergyCost(
+        return Energy(kwh=None, kwh_per_million_tokens=None)
+    return Energy(
         kwh=energy_wh / 1000,
         kwh_per_million_tokens=energy_wh / 1000 / tokens * 1_000_000 if tokens else None,
-        cost=cost,
-        cost_per_million_tokens=cost / tokens * 1_000_000 if tokens else None,
-        price=price,
     )
 
 
@@ -179,7 +162,7 @@ class RunResult(BaseModel):
     speed: Speed | None = None
     gpu: GpuSummary | None = None
     background: Background | None = None
-    energy: EnergyCost
+    energy: Energy
 
 
 # Where results live: one folder in your home directory (or wherever LOCALTUNE_HOME points),

@@ -104,19 +104,13 @@ def fake_monitor(power_w):
     return lambda gpu_index: GpuMonitor(interval_s=0.001, gpu_index=gpu_index, reader=read)
 
 
-def test_monitor_shows_energy_and_cost(monkeypatch):
-    monkeypatch.setattr(cli, "GpuMonitor", fake_monitor(power_w=250))
-    result = runner.invoke(cli.app, ["monitor", "--seconds", "0.05", "--price", "0.20"])
-    assert result.exit_code == 0
-    assert "250 W avg" in result.output
-    assert "0.050 USD per hour" in result.output
-    assert "your price" in result.output
-
-
-def test_monitor_uses_the_default_price(monkeypatch):
+def test_monitor_shows_power_and_energy(monkeypatch):
     monkeypatch.setattr(cli, "GpuMonitor", fake_monitor(power_w=250))
     result = runner.invoke(cli.app, ["monitor", "--seconds", "0.05"])
-    assert "US average" in result.output
+    assert result.exit_code == 0
+    assert "250 W avg" in result.output
+    assert "Wh" in result.output
+    assert "USD" not in result.output
 
 
 def test_monitor_when_power_is_not_reported(monkeypatch):
@@ -133,13 +127,6 @@ def test_monitor_without_a_gpu(monkeypatch):
     result = runner.invoke(cli.app, ["monitor", "--seconds", "0.01"])
     assert result.exit_code == 1
     assert "No GPU readings" in result.output
-
-
-def test_monitor_with_a_zip_code(monkeypatch):
-    monkeypatch.setattr(cli, "GpuMonitor", fake_monitor(power_w=250))
-    result = runner.invoke(cli.app, ["monitor", "--seconds", "0.05", "--zip", "90210"])
-    assert result.exit_code == 0
-    assert "zip 90210 (CA)" in result.output
 
 
 def fake_checks(*statuses):
@@ -285,7 +272,7 @@ def example_run(llama_bench, model, options, name=None):
 
 def test_run_shows_and_saves_the_result(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, example_run)
-    result = runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", str(model)])
     assert result.exit_code == 0
     assert "7,612 tok/s" in result.output
     assert "133.2 tok/s" in result.output
@@ -358,7 +345,7 @@ def test_run_saves_a_failed_run(monkeypatch, tmp_path):
 def test_run_benchmarks_an_ollama_model_by_name(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
-    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"])
     assert result.exit_code == 0
     saved = load_results()[0].settings
     assert saved.model == "qwen3:14b"
@@ -399,7 +386,7 @@ def missing_until_pulled(monkeypatch, tmp_path):
 def test_run_downloads_a_missing_model_when_enter_is_pressed(monkeypatch, tmp_path):
     fake_run(monkeypatch, tmp_path, example_run)
     pulled = missing_until_pulled(monkeypatch, tmp_path)
-    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"], input="\n")
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"], input="\n")
     assert "qwen3:14b isn't downloaded yet. Download it now (9.3 GB)?" in result.output
     assert pulled == ["qwen3:14b"]
     assert result.exit_code == 0
@@ -489,7 +476,7 @@ def fake_api_run(monkeypatch, tmp_path, server=OLLAMA):
 
 def test_run_benchmarks_a_server(monkeypatch, tmp_path):
     fake_api_run(monkeypatch, tmp_path)
-    result = runner.invoke(cli.app, ["run", "b", "-b", "api", "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", "b", "-b", "api"])
     assert result.exit_code == 0
     assert "98.5 tok/s" in result.output
     assert "Ollama 0.12.6" in result.output
@@ -527,7 +514,7 @@ def wide_terminal(monkeypatch):
 def test_results_shows_saved_runs(monkeypatch, tmp_path):
     wide_terminal(monkeypatch)
     model = fake_run(monkeypatch, tmp_path, example_run)
-    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    runner.invoke(cli.app, ["run", str(model)])
     result = runner.invoke(cli.app, ["results"])
     assert result.exit_code == 0
     assert "Saved runs (1 of 1)" in result.output
@@ -601,7 +588,7 @@ def tuned_run(llama_bench, model, options, name=None):
 def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_path):
     wide_terminal(monkeypatch)
     model = fake_run(monkeypatch, tmp_path, tuned_run)
-    result = runner.invoke(cli.app, ["tune", str(model), "--price", "0.20"])
+    result = runner.invoke(cli.app, ["tune", str(model)])
     assert result.exit_code == 0
     assert "Trying 16 combinations" in result.output
     assert "out of GPU memory" in result.output
@@ -1098,10 +1085,10 @@ def test_run_starts_a_model_too_big_for_the_gpu_from_a_split(monkeypatch, tmp_pa
     monkeypatch.setattr(
         cli, "detect_hardware", lambda: FAKE_PC.model_copy(update={"gpus": [small_gpu]})
     )
-    result = runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", str(model)])
     assert (asked[0].gpu_layers, asked[0].cpu_moe_layers) == (49, 27)
     assert "experts in RAM for 27 of 48 layers" in " ".join(result.output.split())
-    runner.invoke(cli.app, ["run", str(model), "--gpu-layers", "99", "--price", "0.20"])
+    runner.invoke(cli.app, ["run", str(model), "--gpu-layers", "99"])
     assert (asked[1].gpu_layers, asked[1].cpu_moe_layers) == (99, None)
 
 
@@ -1231,7 +1218,7 @@ def test_run_shows_the_estimate_beside_the_measured_speed(monkeypatch, tmp_path)
     fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
-    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"])
     assert "Decode, measured" in result.output
     assert "Decode, formula guess" in result.output
     assert "Decode, trained model guess" in result.output
@@ -1245,7 +1232,7 @@ def test_a_run_that_overflowed_the_gpu_is_explained_instead_of_compared(monkeypa
     monkeypatch.setattr(cli, "detect_hardware", lambda: small_pc)
     monkeypatch.setattr(base, "detect_hardware", lambda: small_pc)
     monkeypatch.setattr(cli, "find_ollama_model", lambda name: tmp_path / "sha256-abc")
-    result = runner.invoke(cli.app, ["run", "qwen3:14b", "--price", "0.20"])
+    result = runner.invoke(cli.app, ["run", "qwen3:14b"])
     said = " ".join(result.output.split())
     assert "Decode, measured" in said
     assert "Decode, formula guess" not in said
@@ -1256,8 +1243,8 @@ def test_a_run_that_overflowed_the_gpu_is_explained_instead_of_compared(monkeypa
 def test_results_saves_every_run_as_a_csv_row(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, example_run)
     monkeypatch.setattr(base, "detect_hardware", lambda: FAKE_PC)
-    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
-    runner.invoke(cli.app, ["run", str(model), "--price", "0.20"])
+    runner.invoke(cli.app, ["run", str(model)])
+    runner.invoke(cli.app, ["run", str(model)])
     path = tmp_path / "runs.csv"
     result = runner.invoke(cli.app, ["results", "--csv", str(path)])
     assert "Saved 2 runs" in result.output

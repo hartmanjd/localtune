@@ -18,6 +18,7 @@ from collections.abc import Callable
 from itertools import product
 
 from localtune.gguf import ModelLayout
+from localtune.hardware import GpuInfo
 from localtune.results import RunResult
 
 ATTENTION_AND_CACHE = [(False, "f16"), (True, "f16"), (True, "q8_0"), (True, "q4_0")]
@@ -84,10 +85,17 @@ SPILL_MARGIN_GB = 1.0
 
 
 def too_full(run: RunResult) -> bool:
-    gpu = next((g for g in run.hardware.gpus if g.index == run.gpu_index), None)
-    if gpu is None or run.gpu is None or run.gpu.peak_vram_gb is None:
+    if run.gpu is None or run.gpu.peak_vram_gb is None:
         return False
-    return run.gpu.peak_vram_gb > gpu.vram_gb - SPILL_MARGIN_GB
+    sizes = {g.index: g.vram_gb for g in run.hardware.gpus}
+    if len(run.gpu.cards) > 1:  # spread over several GPUs: any one of them full is too full
+        return any(
+            peak > sizes.get(card, peak) - SPILL_MARGIN_GB
+            for card, peak in zip(run.gpu.cards, run.gpu.card_peak_vram_gb, strict=True)
+        )
+    if run.gpu_index not in sizes:
+        return False
+    return run.gpu.peak_vram_gb > sizes[run.gpu_index] - SPILL_MARGIN_GB
 
 
 # How much to trust the winner. The same settings measured twice differ by a few percent, so
@@ -235,6 +243,43 @@ def first_guess(
         return max(0, layout.layers - moved)
     per_layer = file_bytes / (layout.layers + 1)  # the output layer is about one more
     return max(0, min(layout.layers, int(usable // per_layer) - 1))
+
+
+# The longest conversation a model can hold while all of it stays on the GPU: what is left of
+# the GPU's memory after the model's file, divided by the memory one token of conversation
+# takes (the model file says how much), rounded down to whole thousands and never more than the
+# model was built for. None when the file doesn't say, or when the model doesn't fit at all.
+
+SMALLEST_CONTEXT = 2048
+
+
+def biggest_context(
+    file_bytes: int,
+    kv_bytes_per_token: int,
+    vram_gb: float,
+    model_limit: int | None = None,
+    kv_cache: str = "f16",
+) -> int | None:
+    if not kv_bytes_per_token:
+        return None
+    left = (vram_gb - RESERVED_GB) * 1024**3 - file_bytes
+    tokens = int(left // (kv_bytes_per_token * KV_CACHE_SIZE[kv_cache]))
+    if model_limit:
+        tokens = min(tokens, model_limit)
+    if tokens < SMALLEST_CONTEXT:
+        return None
+    return tokens if tokens == model_limit else tokens // 1024 * 1024
+
+
+# A computer with several GPUs: llama.cpp spreads a model over all of them by itself, so what
+# fits is judged by their memory together. Each card needs its own bit left free, so one
+# RESERVED_GB is taken off here for every card past the first (first_guess takes off the first).
+
+
+def shared_vram_gb(gpus: list[GpuInfo], gpu: int = 0) -> float:
+    if len(gpus) < 2:
+        return gpus[gpu].vram_gb
+    return sum(g.vram_gb for g in gpus) - RESERVED_GB * (len(gpus) - 1)
 
 
 def find_best_split(

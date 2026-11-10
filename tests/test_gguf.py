@@ -85,3 +85,13 @@ def test_other_files_are_refused(tmp_path):
     cut_short.write_bytes(b"GGUF" + struct.pack("<I", 3))
     with pytest.raises(GgufError):
         read_layout(cut_short)
+
+
+def test_reads_the_longest_conversation_the_model_was_built_for(tmp_path):
+    model = tmp_path / "dense.gguf"
+    facts = {"general.architecture": "llama", "llama.block_count": 32}
+    gguf_file(model, facts, {"output.weight": (64, 10)})
+    assert read_layout(model).context_length is None
+    facts["llama.context_length"] = 131072
+    gguf_file(model, facts, {"output.weight": (64, 10)})
+    assert read_layout(model).context_length == 131072

@@ -9,21 +9,19 @@ import pytest
 from typer.testing import CliRunner
 
 from localtune import cli
-from localtune.cost import ElectricityPrice
 from localtune.gpu_monitor import GpuSummary
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.results import (
     RunResult,
     RunSettings,
     Speed,
-    energy_and_cost,
+    energy_used,
     load_results,
     save_result,
 )
 from localtune.share import not_yet_shared, public_record
 
 runner = CliRunner()
-ZIP_PRICE = ElectricityPrice(per_kwh=0.15, kind="zip", source="zip 43210 (OH), NREL")
 
 
 @pytest.fixture(autouse=True)
@@ -32,8 +30,8 @@ def temporary_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LOCALTUNE_SHARE_URL", raising=False)
 
 
-# A run with things in it that must not be shared: a folder path with a user name in its error
-# message, and an electricity price looked up by zip code.
+# A run with something in it that must not be shared: a folder path with a user name in its
+# error message.
 
 
 def private_run() -> RunResult:
@@ -65,16 +63,14 @@ def private_run() -> RunResult:
         ),
         speed=speed,
         gpu=gpu,
-        energy=energy_and_cost(gpu, speed, ZIP_PRICE),
+        energy=energy_used(gpu, speed),
     )
 
 
-def test_a_shared_run_leaves_out_paths_location_and_time_of_day():
+def test_a_shared_run_leaves_out_paths_and_time_of_day():
     record = public_record(private_run())
     text = json.dumps(record)
     assert "justi" not in text
-    assert "43210" not in text
-    assert "price" not in record["energy"] and "cost" not in record["energy"]
     assert record["energy"]["kwh"] == pytest.approx(0.05)
     assert len(record["created_at"]) == len("2026-10-27")
     assert record["rig_id"] == "test-rig"

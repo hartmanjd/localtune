@@ -4,8 +4,8 @@
 # "localtune predict", "localtune run", "localtune tune", "localtune sweep",
 # "localtune results", "localtune share" and "localtune monitor") starts here.
 # This file only handles the conversation with the person: it asks other modules for the
-# actual work (hardware.py for the computer's details, gpu_monitor.py, cost.py and prices.py
-# for GPU readings and their cost, doctor.py for whether the computer is ready, runners/ for
+# actual work (hardware.py for the computer's details, gpu_monitor.py
+# for GPU readings, doctor.py for whether the computer is ready, runners/ for
 # benchmarks, predict.py for estimates before a model is downloaded, tune.py for the settings
 # tuning tries, uses.py for the prompt lengths of a use, share.py for sharing runs, ollama_pull.py
 # for downloading a missing model, eta.py for how long a benchmark should take) and shows the
@@ -40,12 +40,11 @@ from localtune import __version__
 from localtune.animations import left_words, play_logo, span_words, working
 from localtune.awake import keep_awake
 from localtune.background import Background, busy_reasons, read_background
-from localtune.cost import energy_cost, hourly_cost
 from localtune.cpus import ram_bandwidth_gbs
 from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.eta import SweepClock, guess_run, pace, raw_seconds
 from localtune.gguf import GgufError, read_layout
-from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
+from localtune.gpu_monitor import GpuMonitor, GpuSample, GpuSummary, read_sample
 from localtune.gpus import find_gpu_spec, load_gpu_table
 from localtune.hardware import GpuInfo, HardwareInfo, detect_hardware, find_nvidia_smi
 from localtune.install import (
@@ -77,8 +76,13 @@ from localtune.ollama_pull import (
     pull,
     start_ollama,
 )
-from localtune.predict import Prediction, estimate_for, overflowed_gpu, predict
-from localtune.prices import find_price
+from localtune.predict import (
+    Prediction,
+    estimate_for,
+    kv_bytes_per_token,
+    overflowed_gpu,
+    predict,
+)
 from localtune.quality import (
     CHUNKS,
     CONTEXT,
@@ -145,12 +149,14 @@ from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
     NOISE,
+    RESERVED_GB,
     SERVER_PORT,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
     UBATCH_SIZES,
     answer_seconds,
     as_good_as,
+    biggest_context,
     combinations,
     default_run,
     describe,
@@ -161,6 +167,7 @@ from localtune.tune import (
     run_flags,
     server_context,
     server_flags,
+    shared_vram_gb,
     split_settings,
     too_full,
 )
@@ -330,23 +337,50 @@ def predict_command(
             console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
             raise typer.Exit(1)
 
+    cards = 1 if gpu_name else len(hw.gpus)
+    if cards > 1:
+        spec = spec.model_copy(update={"vram_gb": shared_vram_gb(hw.gpus, gpu)})
     tokens = prompt_tokens + gen_tokens
     p = predict(*found, spec, tokens, hw.ram_gb)
+    table_model, file = found
+    room = biggest_context(
+        file.size_bytes,
+        kv_bytes_per_token(table_model),
+        spec.vram_gb,
+        table_model.context_length,
+    )
     trained = None
     facts = model_facts(model)
-    if p.decode_tok_s is not None and facts is not None:
+    if p.decode_tok_s is not None and facts is not None and cards == 1:
         ram_bandwidth = ram_bandwidth_gbs(hw.cpu_name, hw.cpu_threads)
         own_ram = predict(*found, spec, tokens, hw.ram_gb, ram_bandwidth)
         planned = planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens, own_ram)
         trained = trained_estimate(planned)
-    show_prediction(p, use, trained)
+    show_prediction(p, use, trained, room, cards, table_model.context_length)
 
 
-def show_prediction(p: Prediction, use: str | None, trained: float | None = None) -> None:
-    table = Table(title=f"Estimate for {p.model} on {p.gpu}", show_header=False)
+def context_text(tokens: int, model_limit: int | None = None) -> str:
+    if model_limit and tokens >= model_limit:
+        return f"{tokens:,} tokens, all the model can take"
+    limit = f" (model limit {model_limit:,})" if model_limit else ""
+    return f"about {tokens:,} tokens{limit}"
+
+
+def show_prediction(
+    p: Prediction,
+    use: str | None,
+    trained: float | None = None,
+    room: int | None = None,
+    cards: int = 1,
+    model_limit: int | None = None,
+) -> None:
+    on = p.gpu if cards == 1 else f"{cards} GPUs ({p.gpu} first)"
+    table = Table(title=f"Estimate for {p.model} on {on}", show_header=False)
     table.add_row("Model file", f"{p.file_gb:.1f} GB ({p.quant})")
     table.add_row(f"Conversation ({use or 'short chat'})", f"{p.conversation_gb:.1f} GB")
-    table.add_row("GPU memory", f"{p.vram_gb:g} GB, {p.memory_bandwidth_gbs:,.0f} GB/s")
+    total = p.vram_gb + RESERVED_GB * (cards - 1)  # shared_vram_gb took this off for the fit
+    memory = f"{total:g} GB" + (f" over {cards} GPUs" if cards > 1 else "")
+    table.add_row("GPU memory", f"{memory}, {p.memory_bandwidth_gbs:,.0f} GB/s")
     if p.fits_on_computer is False:
         fits = (
             f"[red]No[/red]: about {p.in_ram_gb:.1f} GB would have to go in RAM, more than is free"
@@ -356,6 +390,10 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
     else:
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
+    if room is not None:
+        table.add_row("Biggest context at full speed", context_text(room, model_limit))
+    elif model_limit:
+        table.add_row("Model's context limit", f"{model_limit:,} tokens")
     if p.decode_tok_s is not None:
         table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
@@ -368,6 +406,12 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         "out from the GPU's memory speed and the model's size, and the trained model learned "
         "from real runs."
         + (" It assumes a good GPU/RAM split, which 'localtune tune' finds." if p.in_ram_gb else "")
+        + (
+            f" This computer has {cards} GPUs, and the model is spread over them: the memory is "
+            "counted together, but the speed guess is for one GPU and may be off."
+            if cards > 1
+            else ""
+        )
     )
     downloaded = find_ollama_model(p.model) is not None
     console.print(
@@ -567,7 +611,7 @@ def keep_llama_dir(folder: Path) -> bool:
 # "localtune run": benchmarks a model and saves the result. With llama.cpp (the default) it
 # benchmarks a model file; with "-b api" it benchmarks a model in a local AI server that's
 # already running (runners/web_api.py), found by itself or at --url. While the engine runs, the
-# GPU is watched and the energy priced (runners/base.py); afterwards the speeds, energy and cost
+# GPU is watched and its energy measured (runners/base.py); afterwards the speeds and energy
 # are shown, and the run is added to the results file (results.py). A failed run is saved too,
 # and ends with an error code.
 
@@ -611,14 +655,6 @@ def run(
     batch_size: int | None = typer.Option(None, help="Prompt batch size."),
     ubatch_size: int | None = typer.Option(None, help="Prompt micro-batch size."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
-    zip_code: str | None = typer.Option(
-        None, "--zip", help="Your US zip code, for your local electricity price."
-    ),
-    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
-    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
-    price: float | None = typer.Option(
-        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
-    ),
 ) -> None:
     """Benchmark a model with llama.cpp or a local AI server, and save the result."""
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
@@ -674,7 +710,6 @@ def run(
         requested = requested_settings(model_file, options, model_name)
         label = f"Benchmarking {model_name or model_file.name} with llama.cpp..."
 
-    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     guess = guess_run(
         load_results(),
         requested.model,
@@ -689,9 +724,7 @@ def run(
     )
     left, rough = (guess.seconds, guess.rough) if guess else (None, False)
     with working(console, "run", label, left_s=left, rough=rough):
-        result = measure(
-            engine, requested, electricity, repetitions, gpu_index=gpu, background=background
-        )
+        result = measure(engine, requested, repetitions, gpu_index=gpu, background=background)
     result.use = use
     path = save_result(result)
 
@@ -775,7 +808,7 @@ def starting_split(model_file: Path, gpu: int, tokens: int, kv_cache: str | None
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return {}
-    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    size, vram_gb = model_file.stat().st_size, shared_vram_gb(gpus, gpu)
     on_gpu = first_guess(size, layout, vram_gb, tokens, kv_cache or "f16")
     if on_gpu is None:
         return {}
@@ -914,9 +947,34 @@ def choose_server_and_model(url: str | None, wanted: str | None):
     return server, model
 
 
+def peak_vram_text(gpu: GpuSummary) -> str:
+    if len(gpu.cards) < 2:
+        return f"{gpu.peak_vram_gb:.1f} GB"
+    each = " + ".join(f"{peak:.1f}" for peak in gpu.card_peak_vram_gb)
+    return f"{gpu.peak_vram_gb:.1f} GB over {len(gpu.cards)} GPUs ({each})"
+
+
+# The longest conversation the run's model could hold on the GPUs it used with all of it still
+# there (tune.biggest_context), at the run's own KV cache type.
+
+
+def run_context_room(result: RunResult) -> int | None:
+    facts, cards = result.model_facts, result.gpu.cards if result.gpu else []
+    gpus = [g for g in result.hardware.gpus if g.index in (cards or [result.gpu_index])]
+    if facts is None or not gpus:
+        return None
+    kv_cache = result.settings.kv_cache_k
+    return biggest_context(
+        facts.file_bytes,
+        kv_bytes_per_token(facts),
+        shared_vram_gb(gpus),
+        facts.context_length,
+        kv_cache if kv_cache in KV_CACHE_SIZE else "f16",
+    )
+
+
 def show_run(result: RunResult) -> None:
     speed, gpu, energy = result.speed, result.gpu, result.energy
-    unit = energy.price.currency
     settings = result.settings
     title = settings.model + (f" ({settings.quant})" if settings.quant else "")
     overflowed = overflowed_gpu(result)
@@ -934,11 +992,15 @@ def show_run(result: RunResult) -> None:
     if speed.ttft_ms is not None:
         table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
     if gpu is not None:
-        table.add_row("Peak VRAM", f"{gpu.peak_vram_gb:.1f} GB")
+        table.add_row("Peak VRAM", peak_vram_text(gpu))
+        room = run_context_room(result)
+        if room is not None:
+            limit = result.model_facts.context_length
+            table.add_row("Biggest context at full speed", context_text(room, limit))
         if gpu.avg_power_w is not None:
             power = f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak"
             idle = result.background.gpu_power_w if result.background else None
-            if idle is not None:
+            if idle is not None and len(gpu.cards) < 2:  # the idle reading is one card's
                 power += f" ({idle:.0f} W before the run)"
             table.add_row("Power", power)
     if energy.kwh is not None:
@@ -946,13 +1008,8 @@ def show_run(result: RunResult) -> None:
             "Energy",
             f"{energy.kwh * 1000:.2f} Wh ({energy.kwh_per_million_tokens:.3f} kWh per 1M tokens)",
         )
-        table.add_row(
-            "Cost",
-            f"{energy.cost:.5f} {unit} ({energy.cost_per_million_tokens:.3f} {unit} per 1M tokens)",
-        )
-        table.add_row("Price used", f"{energy.price.per_kwh} {unit}/kWh ({energy.price.source})")
     else:
-        table.add_row("Energy and cost", "unknown (no GPU power readings)")
+        table.add_row("Energy", "unknown (no GPU power readings)")
     console.print(table)
     if overflowed:
         show_overflow(result)
@@ -1014,14 +1071,6 @@ def tune(
     ),
     threads: int | None = typer.Option(None, help="CPU threads to use."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
-    zip_code: str | None = typer.Option(
-        None, "--zip", help="Your US zip code, for your local electricity price."
-    ),
-    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
-    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
-    price: float | None = typer.Option(
-        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
-    ),
     check_quality: bool = typer.Option(
         True,
         "--quality/--no-quality",
@@ -1038,7 +1087,6 @@ def tune(
     prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
     warn_if_busy(gpu)
-    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     session = TuneSession(given={"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe})
     guess = session_guess(
         model_file,
@@ -1062,7 +1110,6 @@ def tune(
             prompt_tokens,
             gen_tokens,
             repetitions,
-            electricity,
             gpu,
             threads,
             use=use,
@@ -1120,7 +1167,6 @@ def tune(
             prompt_tokens,
             gen_tokens,
             repetitions,
-            electricity,
             threads,
             gpu,
         )
@@ -1166,7 +1212,6 @@ def compare(
         prompt_tokens,
         gen_tokens,
         repetitions,
-        find_price(),
         gpu=gpu,
     )
     if not done:
@@ -1211,7 +1256,6 @@ def compare_with_ollama(
     prompt_tokens: int,
     gen_tokens: int,
     repetitions: int,
-    electricity,
     threads: int | None = None,
     gpu: int = 0,
 ) -> bool:
@@ -1236,11 +1280,11 @@ def compare_with_ollama(
     )
     tuned_asked = best.settings.model_copy(update={"engine": "llama-server", "model": name})
     with working(console, "run", "Running the test in llama-server at the tuned settings..."):
-        tuned = measure(tuned_engine, tuned_asked, electricity, repetitions, gpu_index=gpu)
+        tuned = measure(tuned_engine, tuned_asked, repetitions, gpu_index=gpu)
     ollama_engine = partial(run_web_api, server, name, options)
     ollama_asked = web_api_settings(server, name, options)
     with working(console, "run", f"Running the same test in Ollama {server.version}..."):
-        ollama = measure(ollama_engine, ollama_asked, electricity, repetitions, gpu_index=gpu)
+        ollama = measure(ollama_engine, ollama_asked, repetitions, gpu_index=gpu)
     for result in (tuned, ollama):
         result.tune_id, result.use = best.tune_id, best.use
         save_result(result)
@@ -1341,7 +1385,6 @@ def tune_model(
     prompt_tokens: int,
     gen_tokens: int,
     repetitions: int,
-    electricity,
     gpu: int,
     threads: int | None = None,
     sweep_id: str | None = None,
@@ -1373,7 +1416,7 @@ def tune_model(
         if left is None and session.estimate_s is not None:
             left, rough = max(0.0, session.estimate_s - elapsed), session.rough
         with working(console, "tune", label, done / expected, left, session.after_s, rough):
-            result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+            result = measure(engine, requested, repetitions, gpu_index=gpu)
         session.benched += 1
         result.tune_id, result.sweep_id, result.use = tune_id, sweep_id, use
         save_result(result)
@@ -1446,7 +1489,7 @@ def find_splits(
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return None
-    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    size, vram_gb = model_file.stat().st_size, shared_vram_gb(gpus, gpu)
     guesses = {cache: first_guess(size, layout, vram_gb, tokens, cache) for cache in KV_CACHE_SIZE}
     if guesses["f16"] is None:
         return None
@@ -1667,14 +1710,6 @@ def sweep(
     ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
-    zip_code: str | None = typer.Option(
-        None, "--zip", help="Your US zip code, for your local electricity price."
-    ),
-    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
-    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
-    price: float | None = typer.Option(
-        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
-    ),
 ) -> None:
     """Benchmark many models one after another, like every model you have in Ollama."""
     lengths = {name: lengths_for(name, None, None) for name in use or USES}
@@ -1691,7 +1726,6 @@ def sweep(
         find_or_download(model)
 
     warn_if_busy(gpu)
-    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
     sweep_id, finished = uuid4().hex, set()
     if resume:
         last = last_sweep(tuned=tune)
@@ -1701,7 +1735,7 @@ def sweep(
             sweep_id, finished = last
             console.print(f"Resuming the last sweep; {len(finished)} model and use pairs are done.")
     if tune:
-        tune_sweep(models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished)
+        tune_sweep(models, lengths, llama_bench, repetitions, gpu, sweep_id, finished)
         return
     plan = []
     for model in models:
@@ -1753,7 +1787,7 @@ def sweep(
             with working(
                 console, "sweep", label, done / planned, clock.left(done), rough=clock.rough
             ):
-                result = measure(engine, requested, electricity, repetitions, gpu_index=gpu)
+                result = measure(engine, requested, repetitions, gpu_index=gpu)
             clock.took.append(time.monotonic() - started if result.status == "ok" else None)
             result.sweep_id, result.use = sweep_id, use_name
             save_result(result)
@@ -1798,7 +1832,7 @@ def last_sweep(tuned: bool) -> tuple[str, set[tuple[str, str]]] | None:
 
 
 def tune_sweep(
-    models, lengths, llama_bench, repetitions, electricity, gpu, sweep_id, finished=frozenset()
+    models, lengths, llama_bench, repetitions, gpu, sweep_id, finished=frozenset()
 ) -> None:
     plan = []
     for model in models:
@@ -1851,7 +1885,6 @@ def tune_sweep(
                     prompt_tokens,
                     gen_tokens,
                     repetitions,
-                    electricity,
                     gpu,
                     sweep_id=sweep_id,
                     use=use_name,
@@ -1900,7 +1933,7 @@ def session_guess(
     runs = len(combinations(prompt_tokens))
     if not any(value is not None for value in given.values()):
         tokens = prompt_tokens + gen_tokens
-        runs += SPLIT_TRIES * split_searches(model_file, hardware.gpus[gpu].vram_gb, tokens)
+        runs += SPLIT_TRIES * split_searches(model_file, shared_vram_gb(hardware.gpus, gpu), tokens)
     return runs * one_run
 
 
@@ -1963,7 +1996,7 @@ def guessed_split(model_file: Path, gpu: int, tokens: int) -> dict:
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return {}
-    guess = first_guess(model_file.stat().st_size, layout, gpus[gpu].vram_gb, tokens)
+    guess = first_guess(model_file.stat().st_size, layout, shared_vram_gb(gpus, gpu), tokens)
     return {} if guess is None else split_settings(guess, layout)
 
 
@@ -2310,7 +2343,7 @@ def results(
     table.add_column("Engine")
     for column in ("Quant", "Settings", "Result"):
         table.add_column(column)
-    for column in ("Prefill tok/s", "Decode tok/s", "Estimate", "Peak VRAM", "Cost/1M tok"):
+    for column in ("Prefill tok/s", "Decode tok/s", "Estimate", "Peak VRAM", "kWh/1M tok"):
         table.add_column(column, justify="right")
     for run in shown:
         table.add_row(*result_row(run))
@@ -2342,7 +2375,7 @@ RESULT_LABELS = {
 
 def result_row(run: RunResult) -> list[str]:
     speed, gpu, energy = run.speed, run.gpu, run.energy
-    cost = energy.cost_per_million_tokens
+    kwh = energy.kwh_per_million_tokens
     return [
         run.created_at.astimezone().strftime("%m-%d %H:%M"),
         run.settings.model,
@@ -2354,7 +2387,7 @@ def result_row(run: RunResult) -> list[str]:
         f"{speed.decode_tok_s:,.1f}" if speed and speed.decode_tok_s else "",
         f"{estimate:,.0f}" if (estimate := estimate_for(run)) is not None else "",
         f"{gpu.peak_vram_gb:.1f} GB" if gpu and gpu.peak_vram_gb is not None else "",
-        f"{cost:.3f} {energy.price.currency}" if cost is not None else "",
+        f"{kwh:.3f}" if kwh is not None else "",
     ]
 
 
@@ -2403,9 +2436,8 @@ def share(
     console.print("Each run looks like this one:")
     console.print_json(data=body["runs"][-1])
     console.print(
-        "Left out: error messages (they can show folder names), your electricity price and "
-        "zip code, and the time of day. Never saved at all: your name, your computer's name, "
-        "your IP address and prompts."
+        "Left out: error messages (they can show folder names) and the time of day. "
+        "Never saved at all: your name, your computer's name, your IP address and prompts."
     )
     console.print(f"Everything that would be sent is in {path}")
 
@@ -2425,26 +2457,17 @@ def share(
     console.print(f"Shared {len(runs)} runs. Thank you!")
 
 
-# "localtune monitor": watches the GPU for a few seconds and shows what it used and what that
-# cost, the same measurements that will be taken while every benchmark runs. Handy for seeing
+# "localtune monitor": watches the GPU for a few seconds and shows what it used,
+# the same measurements that will be taken while every benchmark runs. Handy for seeing
 # the readings work, or for watching the GPU while something else (a game, a model) is running.
 
 
 @app.command()
 def monitor(
     seconds: float = typer.Option(10, help="How long to watch the GPU."),
-    zip_code: str | None = typer.Option(
-        None, "--zip", help="Your US zip code, for your local electricity price."
-    ),
-    state: str | None = typer.Option(None, help="Your US state, like OH, if no zip is given."),
-    country: str | None = typer.Option(None, help="Your country, like DE, outside the US."),
-    price: float | None = typer.Option(
-        None, help="Your own electricity price per kWh, from your bill. Overrides the rest."
-    ),
     gpu: int = typer.Option(0, help="Which GPU to watch, by its # from 'localtune info'."),
 ) -> None:
-    """Watch the GPU's power, memory, load and temperature, and what the power costs."""
-    electricity = find_price(zip_code=zip_code, state=state, country=country, your_price=price)
+    """Watch the GPU's power, memory, load, temperature and the energy it uses."""
 
     with GpuMonitor(gpu_index=gpu) as gpu_monitor:
         watch_with_countdown(gpu_monitor, gpu, seconds)
@@ -2466,14 +2489,9 @@ def monitor(
     table.add_row("Load", f"{summary.avg_utilization_pct:.0f}% avg")
     table.add_row("Temperature", f"{summary.peak_temperature_c:.0f} °C peak")
     if summary.energy_wh is not None:
-        cost = energy_cost(summary.energy_wh, electricity)
-        per_hour = hourly_cost(summary.avg_power_w, electricity)
-        unit = electricity.currency
         table.add_row("Energy", f"{summary.energy_wh:.3f} Wh")
-        table.add_row("Cost", f"{cost:.5f} {unit} ({per_hour:.3f} {unit} per hour at this power)")
-        table.add_row("Price used", f"{electricity.per_kwh} {unit}/kWh ({electricity.source})")
     else:
-        table.add_row("Energy and cost", "unknown (this GPU doesn't report power)")
+        table.add_row("Energy", "unknown (this GPU doesn't report power)")
     console.print(table)
 
 
