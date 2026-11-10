@@ -8,6 +8,7 @@
 # conversation's length. "localtune tune" (tune.py) uses this to work out how much of a model
 # too big for the GPU can go on it.
 
+import hashlib
 import struct
 from pathlib import Path
 from typing import BinaryIO
@@ -21,6 +22,10 @@ class ModelLayout(BaseModel):
     expert_share: float  # how much of the model's weights are experts, from 0 to 1
     kv_bytes_per_token: int = 0  # at full quality (f16); 0 if the file doesn't say
     context_length: int | None = None  # the longest conversation the model was built for
+    tokenizer: str | None = None  # how the model cuts text into tokens, like "gpt2" or "llama"
+    vocab_size: int | None = None  # how many different tokens it knows
+    vocab_digest: str | None = None  # a fingerprint of every token, to tell vocabularies apart
+    special_tokens: tuple | None = None  # (adds a start token?, its id, adds an end?, its id)
 
 
 class GgufError(Exception):
@@ -129,4 +134,19 @@ def read_layout(path: Path) -> ModelLayout:
         expert_share=experts / total if total else 0.0,
         kv_bytes_per_token=kv_bytes_per_token(meta, arch, layers),
         context_length=meta.get(f"{arch}.context_length") or None,
+        tokenizer=meta.get("tokenizer.ggml.model") or None,
+        vocab_size=len(meta.get("tokenizer.ggml.tokens") or []) or None,
+        vocab_digest=vocab_digest(meta.get("tokenizer.ggml.tokens")),
+        special_tokens=(
+            meta.get("tokenizer.ggml.add_bos_token"),
+            meta.get("tokenizer.ggml.bos_token_id"),
+            meta.get("tokenizer.ggml.add_eos_token"),
+            meta.get("tokenizer.ggml.eos_token_id"),
+        ),
     )
+
+
+def vocab_digest(tokens: list | None) -> str | None:
+    if not tokens:
+        return None
+    return hashlib.sha256("\0".join(map(str, tokens)).encode()).hexdigest()[:16]
