@@ -110,3 +110,8 @@ def test_reads_how_the_model_cuts_text_into_tokens(tmp_path):
     gguf_file(model, facts, {"output.weight": (64, 10)})
     assert read_layout(model).tokenizer == "gpt2"
     assert read_layout(model).vocab_size == 3
+    other = tmp_path / "other.gguf"
+    gguf_file(
+        other, facts | {"tokenizer.ggml.tokens": ["a", "b", "d"]}, {"output.weight": (64, 10)}
+    )
+    assert read_layout(model).vocab_digest != read_layout(other).vocab_digest

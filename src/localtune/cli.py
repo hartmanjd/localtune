@@ -163,6 +163,7 @@ from localtune.speculate import (
     SpeculateRun,
     best_setup,
     built_in_cases,
+    by_length,
     by_setup,
     file_cases,
     known_type,
@@ -170,6 +171,7 @@ from localtune.speculate import (
     needs_draft,
     overall,
     pick_drafts,
+    refused,
     room_for,
     save_runs,
     setups,
@@ -2310,32 +2312,49 @@ def speculate_command(
     if len(tried) < 2 or not cases:
         console.print("There is nothing to compare: no way of guessing is left to try.")
         raise typer.Exit(1)
-    room = room_for(cases, gen_tokens)
     hardware = detect_hardware()
-    options = ServerOptions(
-        context=room,
-        kv_cache=kv_cache,
-        placement=starting_split(model_file, gpu, room, kv_cache),
-        gpu=gpu,
-        draft_gpu_layers=draft_gpu_layers,
-        draft_kv_cache=draft_kv_cache,
-        llama_args=shlex.split(llama_args) if llama_args else [],
-    )
+    groups = by_length(cases)
+    loads = len(tried) * len(groups)
     console.print(
         f"{len(tried)} setups (the first without speculation) x {len(cases)} cases x {repeats} "
-        f"answers = {len(tried) * len(cases) * repeats:,} answers. {name} is loaded once per "
-        "setup.",
+        f"answers = {len(tried) * len(cases) * repeats:,} answers. {name} is loaded {loads} "
+        "times, once per setup and prompt length.",
         markup=False,
     )
-    session, started, runs = uuid4().hex, time.monotonic(), []
+    placements: dict[int, dict] = {}
+    session, started, done, runs = uuid4().hex, time.monotonic(), 0, []
     card = hardware.gpus[gpu].name if gpu < len(hardware.gpus) else None
-    for number, setup in enumerate(tried):
-        left = seconds_left(time.monotonic() - started, number, len(tried))
-        label = f"Setup {number + 1} of {len(tried)}: {setup.label}"
-        with working(console, "run", label, number / len(tried), left, rough=True):
-            rows = measure_setup(
-                llama_server, model_file, setup, cases, options, hardware.gpus, gen_tokens, repeats
+    for setup in tried:
+        found: dict[int, dict] = {}
+        for group in groups:
+            room = room_for(group, gen_tokens)
+            if room not in placements:
+                placements[room] = starting_split(model_file, gpu, room, kv_cache)
+            options = ServerOptions(
+                context=room,
+                kv_cache=kv_cache,
+                placement=placements[room],
+                gpu=gpu,
+                draft_gpu_layers=draft_gpu_layers,
+                draft_kv_cache=draft_kv_cache,
+                llama_args=shlex.split(llama_args) if llama_args else [],
             )
+            left = seconds_left(time.monotonic() - started, done, loads)
+            size = f"{group[0].context:,}-token prompts" if group[0].context else "your prompts"
+            label = f"Load {done + 1} of {loads}: {setup.label}, {size}"
+            with working(console, "run", label, done / loads, left, rough=True):
+                rows = measure_setup(
+                    llama_server,
+                    model_file,
+                    setup,
+                    group,
+                    options,
+                    hardware.gpus,
+                    gen_tokens,
+                    repeats,
+                )
+            done += 1
+            found |= {id(case): row for case, row in zip(group, rows, strict=True)}
         runs += [
             SpeculateRun(
                 session_id=session,
@@ -2345,14 +2364,14 @@ def speculate_command(
                 kv_cache=kv_cache,
                 draft_gpu_layers=draft_gpu_layers,
                 draft_kv_cache=draft_kv_cache,
-                llama_args=options.llama_args,
+                llama_args=shlex.split(llama_args) if llama_args else [],
                 setup=setup,
                 task=case.task,
                 context=case.context,
                 temperature=case.temperature,
-                **row,
+                **found[id(case)],
             )
-            for case, row in zip(cases, rows, strict=True)
+            for case in cases
         ]
     path = save_runs(with_baselines(runs))
     show_speculation(name, runs)
@@ -2381,9 +2400,6 @@ def show_speculation(model: str, runs: list[SpeculateRun]) -> None:
     for column in ("Prompt", "Temp", "Decode tok/s", "Runs", "Speed-up", "Guesses kept"):
         table.add_column(column, justify="right", no_wrap=column == "Runs")
     groups = by_setup(runs)
-    plain_peak = next(
-        (rows[0].peak_vram_gb for setup, rows in groups if not setup.speculates), None
-    )
     for setup, rows in groups:
         table.add_section()
         for index, run in enumerate(rows):
@@ -2394,7 +2410,7 @@ def show_speculation(model: str, runs: list[SpeculateRun]) -> None:
                 speed = f"{run.decode_tok_s:,.1f}"
             kept = f"{run.acceptance:.0%}" if run.acceptance is not None else ""
             if setup.speculates and run.status == "ok" and run.acceptance is None:
-                kept = "no guesses"
+                kept = "refused" if refused(setup, rows) else "no guesses"
             table.add_row(
                 setup.label if index == 0 else "",
                 run.task,
@@ -2408,24 +2424,44 @@ def show_speculation(model: str, runs: list[SpeculateRun]) -> None:
     console.print(table)
     summary = Table(title="Each setup over all cases")
     summary.add_column("Setup", overflow="fold")
-    for column in ("Speed-up", "Guesses kept", "Peak VRAM", "Extra VRAM", "Free on fullest GPU"):
+    tasks = list(dict.fromkeys(run.task for run in runs))
+    for column in ("Speed-up", *(f"On {task}" for task in tasks)):
         summary.add_column(column, justify="right")
+    for column in ("Guesses kept", "Peak VRAM", "Extra VRAM", "Free on fullest GPU"):
+        summary.add_column(column, justify="right")
+    plain = next((rows for setup, rows in groups if not setup.speculates), [])
     for setup, rows in groups:
         guessed = sum(row.draft_tokens or 0 for row in rows)
         kept = sum(row.draft_accepted or 0 for row in rows)
-        first = rows[0]
-        extra = ""
-        if setup.speculates and first.peak_vram_gb is not None and plain_peak is not None:
-            extra = f"{first.peak_vram_gb - plain_peak:+.1f} GB"
-        free = f"{first.free_gb:.2f} GB" if first.free_gb is not None else ""
-        if first.spilled:
+        peaks = [row.peak_vram_gb for row in rows if row.peak_vram_gb is not None]
+        frees = [row.free_gb for row in rows if row.free_gb is not None]
+        extras = [
+            row.peak_vram_gb - base.peak_vram_gb
+            for row in rows
+            for base in plain
+            if (row.context, row.task, row.temperature)
+            == (base.context, base.task, base.temperature)
+            and row.peak_vram_gb is not None
+            and base.peak_vram_gb is not None
+        ]
+        free = f"{min(frees):.2f} GB" if frees else ""
+        if frees and min(frees) < SPILL_MARGIN_GB:
             free = f"[yellow]{free}, too full[/yellow]"
+        if refused(setup, rows):
+            kept_text = "[yellow]refused by llama.cpp[/yellow]"
+        else:
+            kept_text = f"{kept / guessed:.0%}" if guessed else ""
+        counted = setup.speculates and not refused(setup, rows)
         summary.add_row(
             setup.label,
-            gain_text(overall(rows)) if setup.speculates else "",
-            f"{kept / guessed:.0%}" if guessed else "",
-            f"{first.peak_vram_gb:.1f} GB" if first.peak_vram_gb is not None else "",
-            extra,
+            gain_text(overall(rows)) if counted else "",
+            *(
+                gain_text(overall([row for row in rows if row.task == task])) if counted else ""
+                for task in tasks
+            ),
+            kept_text,
+            f"{max(peaks):.1f} GB" if peaks else "",
+            f"{max(extras):+.1f} GB" if setup.speculates and extras else "",
             free,
         )
     console.print(summary)
@@ -2434,7 +2470,9 @@ def show_speculation(model: str, runs: list[SpeculateRun]) -> None:
         console.print(f"A setup failed: {failed.error}", markup=False, highlight=False)
     console.print(
         "Speed-up is against the first setup on the same case; the overall one is the geometric "
-        "mean. Guesses kept is the share of guessed tokens the model agreed with."
+        "mean, and each task's is that task's cases only, since speculation helps some kinds of "
+        "answer far more than others. Guesses kept is the share of guessed tokens the model "
+        "agreed with."
     )
     best = best_setup(runs)
     if best is None or best[1] < WORTH_IT:

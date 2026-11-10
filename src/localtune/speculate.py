@@ -47,7 +47,6 @@ DRAFT_TYPE = "draft-simple"
 DRAFT_TYPES = ("draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark")
 LOOKUP_TYPES = ("ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "ngram-cache")
 TASKS = ("copy", "fresh")
-VOCAB_SLACK = 128  # llama.cpp accepts a draft whose vocabulary differs by at most this many
 SMALL_ENOUGH = 0.34  # a draft over a third of the big model's size costs more than it saves
 WORTH_IT = 1.05  # a speed-up under 5% is within what two runs of the same setup differ by
 
@@ -168,17 +167,17 @@ def setups(
 
 
 # A draft has to cut text into the same tokens as the big model, or its guesses mean nothing to
-# it. Two files from one family do; the tokenizer's name and the size of the vocabulary are
-# what the files say about it without reading every token. llama.cpp checks the tokens
-# themselves when it loads the pair, and a pair it refuses shows up as a setup that made no
-# guesses.
+# it. llama.cpp compares the two vocabularies token by token when it loads the pair, and quietly
+# runs without the draft when they differ (Qwen2.5 and Qwen3 share a size but not every token).
+# So a draft is only picked when its file lists exactly the same tokens, with the same start
+# and end tokens. A pair that slips through anyway shows up as a setup that made no guesses.
 
 
 def can_draft_for(draft: ModelLayout, target: ModelLayout) -> bool:
-    if not (draft.tokenizer and draft.vocab_size and target.vocab_size):
+    if not (draft.tokenizer and draft.vocab_digest):
         return False
-    close = abs(draft.vocab_size - target.vocab_size) <= VOCAB_SLACK
-    return draft.tokenizer == target.tokenizer and close
+    same_tokens = (draft.tokenizer, draft.vocab_digest) == (target.tokenizer, target.vocab_digest)
+    return same_tokens and draft.special_tokens == target.special_tokens
 
 
 def pick_drafts(
@@ -211,7 +210,7 @@ WHO = "the keeper,a surveyor,the baker,an engineer,the pilot,a gardener,the cler
 DID = "measured,repaired,painted,counted,moved,recorded,cleaned,tested"
 WHAT = "the north gate,a copper valve,the old ledger,a signal lamp,the tide gauge,a spare rope"
 WHEN = "before dawn,at noon,after the storm,on the second day,late in the evening,in winter"
-TOKENS_PER_NOTE = 16
+TOKENS_PER_NOTE = 23  # measured with Qwen3's tokenizer: 128 notes were 2,970 tokens
 COPY = "Write out the notes above again, word for word, starting from Note 1. Write nothing else."
 FRESH = (
     "Ignore the notes above. Write a new story about a lighthouse keeper who finds a letter "
@@ -257,6 +256,18 @@ def file_cases(files: list[Path], temperatures: list[float]) -> list[Case]:
 def room_for(cases: list[Case], gen_tokens: int) -> int:
     longest = max(case.context or math.ceil(len(case.prompt) / 3) for case in cases)
     return math.ceil((longest * 1.25 + gen_tokens + 256) / 1024) * 1024
+
+
+# Each prompt length gets its own start of llama-server, sized for it: the conversation's memory
+# is set aside when llama-server starts, for the draft as well as the model, so room for a long
+# prompt would crowd the GPU during the short ones too.
+
+
+def by_length(cases: list[Case]) -> list[list[Case]]:
+    groups: dict[int | None, list[Case]] = {}
+    for case in cases:
+        groups.setdefault(case.context, []).append(case)
+    return list(groups.values())
 
 
 # Starting llama-server for a setup. The big model is placed as tune would place it; the draft
@@ -491,11 +502,18 @@ def by_setup(runs: list[SpeculateRun]) -> list[tuple[Setup, list[SpeculateRun]]]
     return groups
 
 
+def refused(setup: Setup, rows: list[SpeculateRun]) -> bool:
+    """A draft setup that answered but never guessed: llama.cpp ran it without the draft."""
+    answered = [row for row in rows if row.status == "ok"]
+    return bool(setup.draft and answered) and not any(row.draft_tokens for row in answered)
+
+
 def best_setup(runs: list[SpeculateRun]) -> tuple[Setup, float] | None:
     scored = [
         (gain, setup)
         for setup, rows in by_setup(runs)
         if setup.speculates
+        and not refused(setup, rows)
         and not any(row.spilled for row in rows)
         and (gain := overall(rows)) is not None
     ]

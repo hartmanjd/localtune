@@ -40,9 +40,15 @@ def temporary_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
 
 
-def a_layout(tokenizer="gpt2", vocab=151_936):
+def a_layout(tokenizer="gpt2", digest="qwen3", ends=(False, 151_643, False, 151_645)):
     return ModelLayout(
-        layers=40, experts=None, expert_share=0.0, tokenizer=tokenizer, vocab_size=vocab
+        layers=40,
+        experts=None,
+        expert_share=0.0,
+        tokenizer=tokenizer,
+        vocab_size=151_936,
+        vocab_digest=digest,
+        special_tokens=ends,
     )
 
 
@@ -77,12 +83,15 @@ def test_setups_are_named_by_what_sets_them_apart():
 # Choosing drafts from the models already downloaded.
 
 
-def test_a_draft_must_cut_text_the_same_way():
+def test_a_draft_must_cut_text_into_exactly_the_same_tokens():
+    # Qwen2.5 and Qwen3 both know 151,936 tokens, but not the same ones: llama.cpp refuses
+    # the pair, so localtune mustn't pick it.
     target = a_layout()
-    assert can_draft_for(a_layout(vocab=151_936 + 100), target)
-    assert not can_draft_for(a_layout(vocab=128_256), target)
+    assert can_draft_for(a_layout(), target)
+    assert not can_draft_for(a_layout(digest="qwen2.5"), target)
     assert not can_draft_for(a_layout(tokenizer="llama"), target)
-    assert not can_draft_for(a_layout(tokenizer=None), target)
+    assert not can_draft_for(a_layout(ends=(True, 1, False, 2)), target)
+    assert not can_draft_for(a_layout(digest=None), target)
 
 
 def test_the_smallest_models_of_the_same_family_are_picked(tmp_path):
@@ -91,7 +100,7 @@ def test_the_smallest_models_of_the_same_family_are_picked(tmp_path):
     for name, size in sizes.items():
         files[name] = tmp_path / name
         files[name].write_bytes(b"x" * size)
-    layouts = {name: a_layout() for name in sizes} | {"other": a_layout(vocab=32_000)}
+    layouts = {name: a_layout() for name in sizes} | {"other": a_layout(digest="qwen2.5")}
     picked = pick_drafts(
         files["target"],
         layouts["target"],
@@ -395,16 +404,27 @@ def on_this_pc(monkeypatch, tmp_path, drafts=("qwen3:0.6b",)):
 
 def test_the_command_with_only_a_model_picks_a_draft_and_runs_the_whole_grid(monkeypatch, tmp_path):
     model, seen = on_this_pc(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.console, "width", 200)
     result = runner.invoke(cli.app, ["speculate", str(model)])
     assert result.exit_code == 0, result.output
-    labels = [setup.label for setup, _, _ in seen]
+    labels = [setup.label for setup, _, _ in seen[::2]]
     assert labels == ["no speculation", "qwen3:0.6b, n-max 4", "qwen3:0.6b, n-max 16", "ngram-mod"]
-    assert len(seen[0][1]) == 8
+    # each prompt length gets its own start of llama-server, sized for it
+    assert [{case.context for case in cases} for _, cases, _ in seen[:2]] == [{2048}, {16_384}]
+    assert seen[0][2].context < seen[1][2].context
     assert "4 setups" in result.output and "96 answers" in result.output
+    assert "loaded 8 times" in result.output
     assert "1.80x" in result.output and "85%" in result.output
+    assert "On copy" in result.output and "On fresh" in result.output
     assert "+1.0 GB" in result.output
     assert "Measured:" in result.output and "--spec-draft-model" in result.output
-    assert len(load_runs()) == 32
+    back = load_runs()
+    assert len(back) == 32
+    assert [(run.task, run.context, run.temperature) for run in back[:3]] == [
+        ("copy", 2048, 0.0),
+        ("copy", 2048, 0.8),
+        ("copy", 16_384, 0.0),
+    ]
 
 
 def test_every_list_option_multiplies_the_grid(monkeypatch, tmp_path):
@@ -425,7 +445,7 @@ def test_without_a_draft_downloaded_only_the_lookup_is_tried(monkeypatch, tmp_pa
     result = runner.invoke(cli.app, ["speculate", str(model)])
     assert result.exit_code == 0, result.output
     assert "--draft" in result.output
-    assert [setup.label for setup, _, _ in seen] == ["no speculation", "ngram-mod"]
+    assert [setup.label for setup, _, _ in seen[::2]] == ["no speculation", "ngram-mod"]
 
 
 def test_your_own_prompt_files_replace_the_built_in_tasks(monkeypatch, tmp_path):
@@ -465,3 +485,26 @@ def test_mistakes_are_explained_before_anything_is_loaded(monkeypatch, tmp_path)
         assert result.exit_code == 1
         assert said in result.output
     assert seen == []
+
+
+def test_a_draft_llama_cpp_ran_without_is_called_refused_and_cant_win(monkeypatch, tmp_path):
+    model, _ = on_this_pc(monkeypatch, tmp_path)
+
+    def no_guesses(*args):
+        setup = args[2]
+        speed = 60.0 if setup.spec_type == "ngram-mod" else 40.0
+        return [
+            {"decode_tok_s": speed, "decode_runs": [speed], "peak_vram_gb": 10.0, "free_gb": 6.0}
+            for _ in args[3]
+        ]
+
+    monkeypatch.setattr(cli, "measure_setup", no_guesses)
+    result = runner.invoke(cli.app, ["speculate", str(model), "--n-max", "4"])
+    assert result.exit_code == 0, result.output
+    assert "refused" in result.output
+    assert "ngram-mod was the fastest" in result.output
+
+
+def test_the_notes_come_out_about_as_long_as_asked():
+    # 23 tokens a note, measured with Qwen3's tokenizer; a word is a little over one token
+    assert len(notes(16_384).split()) == pytest.approx(16_384 * 0.75, rel=0.15)
