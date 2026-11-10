@@ -43,6 +43,15 @@ See whether a model fits on your GPU and how fast it should write, before downlo
 localtune predict qwen3:14b
 ```
 
+`predict` also says the biggest context (the longest conversation) that keeps the whole model on
+the GPU. That number is worked out from sizes written in the model's file. To prove it on your
+computer, with whatever else is using the GPU, load the model at that size and read the GPU's
+memory:
+
+```
+localtune context qwen3:14b
+```
+
 See the models and GPUs `predict` knows (the 100 most downloaded models on Ollama, and NVIDIA's
 RTX 20 to 50 cards plus common data center GPUs). Add a word to show only matching names:
 
