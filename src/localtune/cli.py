@@ -356,11 +356,14 @@ def predict_command(
         own_ram = predict(*found, spec, tokens, hw.ram_gb, ram_bandwidth)
         planned = planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens, own_ram)
         trained = trained_estimate(planned)
-    show_prediction(p, use, trained, room, cards)
+    show_prediction(p, use, trained, room, cards, table_model.context_length)
 
 
-def context_text(tokens: int) -> str:
-    return f"about {tokens:,} tokens"
+def context_text(tokens: int, model_limit: int | None = None) -> str:
+    if model_limit and tokens >= model_limit:
+        return f"{tokens:,} tokens, all the model can take"
+    limit = f" (model limit {model_limit:,})" if model_limit else ""
+    return f"about {tokens:,} tokens{limit}"
 
 
 def show_prediction(
@@ -369,6 +372,7 @@ def show_prediction(
     trained: float | None = None,
     room: int | None = None,
     cards: int = 1,
+    model_limit: int | None = None,
 ) -> None:
     on = p.gpu if cards == 1 else f"{cards} GPUs ({p.gpu} first)"
     table = Table(title=f"Estimate for {p.model} on {on}", show_header=False)
@@ -387,7 +391,9 @@ def show_prediction(
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
     if room is not None:
-        table.add_row("Biggest context that fits", context_text(room))
+        table.add_row("Biggest context at full speed", context_text(room, model_limit))
+    elif model_limit:
+        table.add_row("Model's context limit", f"{model_limit:,} tokens")
     if p.decode_tok_s is not None:
         table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
@@ -989,7 +995,8 @@ def show_run(result: RunResult) -> None:
         table.add_row("Peak VRAM", peak_vram_text(gpu))
         room = run_context_room(result)
         if room is not None:
-            table.add_row("Biggest context that fits", context_text(room))
+            limit = result.model_facts.context_length
+            table.add_row("Biggest context at full speed", context_text(room, limit))
         if gpu.avg_power_w is not None:
             power = f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak"
             idle = result.background.gpu_power_w if result.background else None
