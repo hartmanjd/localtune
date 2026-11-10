@@ -2,7 +2,8 @@
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
 # "localtune predict", "localtune run", "localtune tune", "localtune sweep",
-# "localtune results", "localtune share" and "localtune monitor") starts here.
+# "localtune results", "localtune share", "localtune speculate" and "localtune monitor") starts
+# here.
 # This file only handles the conversation with the person: it asks other modules for the
 # actual work (hardware.py for the computer's details, gpu_monitor.py
 # for GPU readings, doctor.py for whether the computer is ready, runners/ for
@@ -12,6 +13,7 @@
 # answers.
 
 import csv
+import shlex
 import shutil
 import sys
 import time
@@ -153,6 +155,26 @@ from localtune.share import (
     write_preview,
 )
 from localtune.side_by_side import run_tuned_server, unload_from_ollama
+from localtune.speculate import (
+    DRAFT_TYPE,
+    TASKS,
+    WORTH_IT,
+    ServerOptions,
+    SpeculateRun,
+    best_setup,
+    built_in_cases,
+    by_setup,
+    file_cases,
+    known_type,
+    measure_setup,
+    needs_draft,
+    overall,
+    pick_drafts,
+    room_for,
+    save_runs,
+    setups,
+    with_baselines,
+)
 from localtune.speed_model import planned_run, trained_estimate, trained_for_run
 from localtune.tune import (
     DEFAULTS,
@@ -2166,6 +2188,277 @@ def show_context_proof(proof: ContextProof, model_limit: int | None) -> None:
         f"model on the GPU and {best.free_gb:.2f} GB left free. "
         f"The formula guess was about {proof.formula_context:,}."
     )
+
+
+# "localtune speculate": does speculative decoding (speculate.py) make this model faster on this
+# computer? With only a model name it picks small models of the same family that are already
+# downloaded as drafts, adds the lookup type that needs no second model, and measures each on
+# eight cases. Every list option takes several values with commas, and every combination runs.
+
+
+def listed(text: str | None, kind: Callable, name: str) -> list:
+    if text is None:
+        return [None]
+    try:
+        return [kind(part.strip()) for part in text.split(",") if part.strip()]
+    except ValueError as error:
+        console.print(f"--{name} takes values separated by commas, like 4,8,16.", markup=False)
+        raise typer.Exit(1) from error
+
+
+def chosen_drafts(names: list[str], model_file: Path, layout) -> list[tuple[str, Path]]:
+    if names:
+        found = []
+        for name in names:
+            file, _ = find_or_download(name)
+            if file is None:
+                explain_missing_model(name)
+                raise typer.Exit(1)
+            found.append((name if not Path(name).is_file() else Path(name).name, file))
+        return found
+    downloaded = [(name, find_ollama_model(name)) for name in downloaded_models()]
+    return pick_drafts(model_file, layout, [(n, f) for n, f in downloaded if f], read_layout)
+
+
+@app.command("speculate")
+def speculate_command(
+    model: Annotated[str, typer.Argument(help="Model file (.gguf), or an Ollama model name.")],
+    draft: Annotated[
+        list[str] | None,
+        typer.Option(help="A small model to guess ahead, like qwen3:0.6b. Can be given again."),
+    ] = None,
+    spec_type: Annotated[
+        str | None,
+        typer.Option(
+            "--type",
+            help="Ways of guessing, like draft-simple,ngram-mod. Join two with + to use both.",
+        ),
+    ] = None,
+    n_max: str = typer.Option("4,16", help="Tokens guessed ahead per step."),
+    n_min: str | None = typer.Option(None, help="Fewest guessed tokens worth checking."),
+    p_min: str | None = typer.Option(None, help="How sure the draft must be to keep guessing."),
+    context: str = typer.Option("2048,16384", help="Prompt lengths, in tokens."),
+    temperature: str = typer.Option("0,0.8", help="Temperatures: 0 always picks the likeliest."),
+    task: str = typer.Option("copy,fresh", help="copy repeats the prompt, fresh writes anew."),
+    prompt_file: Annotated[
+        list[Path] | None,
+        typer.Option(help="Your own prompt, one per text file, instead of the built-in tasks."),
+    ] = None,
+    gen_tokens: int = typer.Option(256, help="Tokens written per answer."),
+    repeats: int = typer.Option(3, help="Answers per case; the middle speed is kept."),
+    kv_cache: str = typer.Option("f16", help="KV cache type: f16, q8_0 or q4_0."),
+    draft_gpu_layers: int | None = typer.Option(None, help="Draft layers on the GPU (all)."),
+    draft_kv_cache: str | None = typer.Option(None, help="KV cache type of the draft."),
+    llama_args: str | None = typer.Option(
+        None, help="Anything else for llama-server, in quotes, passed on as it is."
+    ),
+    gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
+) -> None:
+    """Measure whether speculative decoding (a draft model guessing ahead) speeds a model up."""
+    llama_server = find_tool("llama-server")
+    if llama_server is None:
+        console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
+        raise typer.Exit(1)
+    for cache in (kv_cache, draft_kv_cache):
+        if cache is not None and cache not in KV_CACHE_SIZE:
+            console.print(f"Unknown KV cache type {cache}. Choose from: {', '.join(KV_CACHE_SIZE)}")
+            raise typer.Exit(1)
+    tasks = listed(task, str, "task")
+    if not prompt_file and any(name not in TASKS for name in tasks):
+        console.print(f"--task takes: {', '.join(TASKS)}")
+        raise typer.Exit(1)
+    for file in prompt_file or []:
+        if not file.is_file():
+            console.print(f"Can't find the prompt file {file}.", markup=False)
+            raise typer.Exit(1)
+    model_file, model_name = find_or_download(model)
+    if model_file is None:
+        explain_missing_model(model)
+        raise typer.Exit(1)
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError) as error:
+        console.print(f"Can't read {model_file.name}: {error}", markup=False)
+        raise typer.Exit(1) from error
+    name = model_name or model_file.name
+    drafts = chosen_drafts(draft or [], model_file, layout)
+    types = listed(spec_type, str, "type") if spec_type else [DRAFT_TYPE, "ngram-mod"]
+    unknown = [kind for kind in types if not known_type(kind)]
+    if unknown:
+        console.print(f"llama.cpp has no speculation type called {unknown[0]}.", markup=False)
+        raise typer.Exit(1)
+    if not drafts and any(needs_draft(kind) for kind in types):
+        console.print(
+            f"No small model of {name}'s family is downloaded, so no draft model is tried. To try "
+            "one, name it with --draft (a much smaller model of the same family, like qwen3:0.6b "
+            "for qwen3:14b).",
+            markup=False,
+        )
+        types = [kind for kind in types if not needs_draft(kind)]
+    temperatures = listed(temperature, float, "temperature")
+    if prompt_file:
+        cases = file_cases(prompt_file, temperatures)
+    else:
+        cases = built_in_cases(tasks, listed(context, int, "context"), temperatures)
+    tried = setups(
+        drafts,
+        types,
+        listed(n_max, int, "n-max"),
+        listed(n_min, int, "n-min"),
+        listed(p_min, float, "p-min"),
+    )
+    if len(tried) < 2 or not cases:
+        console.print("There is nothing to compare: no way of guessing is left to try.")
+        raise typer.Exit(1)
+    room = room_for(cases, gen_tokens)
+    hardware = detect_hardware()
+    options = ServerOptions(
+        context=room,
+        kv_cache=kv_cache,
+        placement=starting_split(model_file, gpu, room, kv_cache),
+        gpu=gpu,
+        draft_gpu_layers=draft_gpu_layers,
+        draft_kv_cache=draft_kv_cache,
+        llama_args=shlex.split(llama_args) if llama_args else [],
+    )
+    console.print(
+        f"{len(tried)} setups (the first without speculation) x {len(cases)} cases x {repeats} "
+        f"answers = {len(tried) * len(cases) * repeats:,} answers. {name} is loaded once per "
+        "setup.",
+        markup=False,
+    )
+    session, started, runs = uuid4().hex, time.monotonic(), []
+    card = hardware.gpus[gpu].name if gpu < len(hardware.gpus) else None
+    for number, setup in enumerate(tried):
+        left = seconds_left(time.monotonic() - started, number, len(tried))
+        label = f"Setup {number + 1} of {len(tried)}: {setup.label}"
+        with working(console, "run", label, number / len(tried), left, rough=True):
+            rows = measure_setup(
+                llama_server, model_file, setup, cases, options, hardware.gpus, gen_tokens, repeats
+            )
+        runs += [
+            SpeculateRun(
+                session_id=session,
+                rig_id=rig_id(),
+                gpu=card,
+                model=name,
+                kv_cache=kv_cache,
+                draft_gpu_layers=draft_gpu_layers,
+                draft_kv_cache=draft_kv_cache,
+                llama_args=options.llama_args,
+                setup=setup,
+                task=case.task,
+                context=case.context,
+                temperature=case.temperature,
+                **row,
+            )
+            for case, row in zip(cases, rows, strict=True)
+        ]
+    path = save_runs(with_baselines(runs))
+    show_speculation(name, runs)
+    console.print(f"Saved to {path}")
+    if not any(run.status == "ok" for run in runs):
+        raise typer.Exit(1)
+
+
+def spread(run: SpeculateRun) -> str:
+    if len(run.decode_runs) < 2:
+        return ""
+    return f"{min(run.decode_runs):,.1f}-{max(run.decode_runs):,.1f}"
+
+
+def gain_text(gain: float | None) -> str:
+    if gain is None:
+        return ""
+    colour = "green" if gain >= WORTH_IT else "red" if gain < 1 / WORTH_IT else "yellow"
+    return f"[{colour}]{gain:.2f}x[/{colour}]"
+
+
+def show_speculation(model: str, runs: list[SpeculateRun]) -> None:
+    table = Table(title=f"Speculative decoding for {model}")
+    table.add_column("Setup", overflow="fold")
+    table.add_column("Task")
+    for column in ("Prompt", "Temp", "Decode tok/s", "Runs", "Speed-up", "Guesses kept"):
+        table.add_column(column, justify="right", no_wrap=column == "Runs")
+    groups = by_setup(runs)
+    plain_peak = next(
+        (rows[0].peak_vram_gb for setup, rows in groups if not setup.speculates), None
+    )
+    for setup, rows in groups:
+        table.add_section()
+        for index, run in enumerate(rows):
+            if run.status != "ok" or run.decode_tok_s is None:
+                why = "out of memory" if run.status == "out_of_memory" else "failed"
+                speed = f"[red]{why}[/red]"
+            else:
+                speed = f"{run.decode_tok_s:,.1f}"
+            kept = f"{run.acceptance:.0%}" if run.acceptance is not None else ""
+            if setup.speculates and run.status == "ok" and run.acceptance is None:
+                kept = "no guesses"
+            table.add_row(
+                setup.label if index == 0 else "",
+                run.task,
+                f"{run.prompt_tokens or run.context or 0:,}",
+                f"{run.temperature:g}",
+                speed,
+                spread(run),
+                gain_text(run.speedup) if setup.speculates else "",
+                kept,
+            )
+    console.print(table)
+    summary = Table(title="Each setup over all cases")
+    summary.add_column("Setup", overflow="fold")
+    for column in ("Speed-up", "Guesses kept", "Peak VRAM", "Extra VRAM", "Free on fullest GPU"):
+        summary.add_column(column, justify="right")
+    for setup, rows in groups:
+        guessed = sum(row.draft_tokens or 0 for row in rows)
+        kept = sum(row.draft_accepted or 0 for row in rows)
+        first = rows[0]
+        extra = ""
+        if setup.speculates and first.peak_vram_gb is not None and plain_peak is not None:
+            extra = f"{first.peak_vram_gb - plain_peak:+.1f} GB"
+        free = f"{first.free_gb:.2f} GB" if first.free_gb is not None else ""
+        if first.spilled:
+            free = f"[yellow]{free}, too full[/yellow]"
+        summary.add_row(
+            setup.label,
+            gain_text(overall(rows)) if setup.speculates else "",
+            f"{kept / guessed:.0%}" if guessed else "",
+            f"{first.peak_vram_gb:.1f} GB" if first.peak_vram_gb is not None else "",
+            extra,
+            free,
+        )
+    console.print(summary)
+    failed = next((run for run in runs if run.error), None)
+    if failed is not None:
+        console.print(f"A setup failed: {failed.error}", markup=False, highlight=False)
+    console.print(
+        "Speed-up is against the first setup on the same case; the overall one is the geometric "
+        "mean. Guesses kept is the share of guessed tokens the model agreed with."
+    )
+    best = best_setup(runs)
+    if best is None or best[1] < WORTH_IT:
+        console.print(
+            "[yellow]Measured:[/yellow] no setup made this model clearly faster on this computer."
+        )
+        return
+    setup, gain = best
+    console.print(
+        f"[green]Measured:[/green] {setup.label} was the fastest, {gain:.2f}x over all cases.",
+        highlight=False,
+    )
+    console.print("llama-server flags for it:")
+    flags = ["--spec-type", setup.spec_type.replace("+", ",")]
+    if setup.draft_file:
+        flags = ["--spec-draft-model", quoted(setup.draft_file), "--spec-draft-ngl", "999", *flags]
+    for flag, value in (
+        ("--spec-draft-n-max", setup.n_max),
+        ("--spec-draft-n-min", setup.n_min),
+        ("--spec-draft-p-min", setup.p_min),
+    ):
+        if value is not None:
+            flags += [flag, f"{value:g}"]
+    console.print("  " + " ".join(flags), markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command()

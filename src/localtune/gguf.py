@@ -21,6 +21,8 @@ class ModelLayout(BaseModel):
     expert_share: float  # how much of the model's weights are experts, from 0 to 1
     kv_bytes_per_token: int = 0  # at full quality (f16); 0 if the file doesn't say
     context_length: int | None = None  # the longest conversation the model was built for
+    tokenizer: str | None = None  # how the model cuts text into tokens, like "gpt2" or "llama"
+    vocab_size: int | None = None  # how many different tokens it knows
 
 
 class GgufError(Exception):
@@ -129,4 +131,6 @@ def read_layout(path: Path) -> ModelLayout:
         expert_share=experts / total if total else 0.0,
         kv_bytes_per_token=kv_bytes_per_token(meta, arch, layers),
         context_length=meta.get(f"{arch}.context_length") or None,
+        tokenizer=meta.get("tokenizer.ggml.model") or None,
+        vocab_size=len(meta.get("tokenizer.ggml.tokens") or []) or None,
     )

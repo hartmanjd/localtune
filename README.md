@@ -52,6 +52,28 @@ memory:
 localtune context qwen3:14b
 ```
 
+See whether speculative decoding makes a model faster on your computer. A small "draft" model of
+the same family guesses a few tokens ahead and the big model checks them all at once, so the
+answer is the same and arrives sooner when the guesses are right. With only a model name,
+`speculate` picks small models you already have as drafts, adds llama.cpp's lookup type that
+needs no second model, and measures each on eight cases: an answer that copies from the prompt
+or is written fresh, a short or a long prompt, and a temperature of 0 or 0.8. Each row shows the
+writing speed, the speed-up over no speculation, and the share of guesses the model kept:
+
+```
+localtune speculate qwen3:14b
+```
+
+Every list option takes several values, and every combination runs. `--llama-args` passes
+anything else on to llama-server as it is, and `--prompt-file` measures your own prompts:
+
+```
+localtune speculate qwen3:14b --draft qwen3:0.6b --draft qwen3:1.7b --n-max 2,4,8,16 --p-min 0,0.5,0.8 --repeats 5
+```
+
+The rows are saved to `speculate.jsonl` in localtune's folder, one JSON object per line, apart
+from the benchmark runs.
+
 See the models and GPUs `predict` knows (the 100 most downloaded models on Ollama, and NVIDIA's
 RTX 20 to 50 cards plus common data center GPUs). Add a word to show only matching names:
 
