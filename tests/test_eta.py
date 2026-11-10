@@ -4,11 +4,10 @@
 import pytest
 
 from localtune import eta
-from localtune.cost import DEFAULT_PRICE
 from localtune.gpu_monitor import GpuSummary
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
-from localtune.results import RunResult, RunSettings, Speed, energy_and_cost, model_facts, rig_id
+from localtune.results import RunResult, RunSettings, Speed, energy_used, model_facts, rig_id
 
 GPU = find_gpu_spec("RTX 4070 Ti SUPER", 16)
 PC = HardwareInfo(
@@ -51,7 +50,7 @@ def saved_run(model: str, took_s: float, rig: str | None = None, **settings) -> 
             avg_utilization_pct=0,
             peak_temperature_c=0,
         ),
-        energy=energy_and_cost(None, None, DEFAULT_PRICE),
+        energy=energy_used(None, None),
     )
 
 

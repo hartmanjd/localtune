@@ -2,11 +2,10 @@
 
 import pytest
 
-from localtune.cost import ElectricityPrice
 from localtune.gguf import ModelLayout
 from localtune.gpu_monitor import GpuSummary
 from localtune.hardware import GpuInfo, HardwareInfo
-from localtune.results import EnergyCost, RunResult, RunSettings, Speed
+from localtune.results import Energy, RunResult, RunSettings, Speed
 from localtune.tune import (
     answer_seconds,
     as_good_as,
@@ -47,7 +46,6 @@ def test_long_prompts_try_flash_attention_off_only_once_and_last():
 
 
 def a_run(decode, status="ok", prefill=5000.0, **settings):
-    price = ElectricityPrice(per_kwh=0.2, currency="USD", kind="yours", source="you")
     return RunResult(
         rig_id="rig",
         status=status,
@@ -56,13 +54,7 @@ def a_run(decode, status="ok", prefill=5000.0, **settings):
         speed=Speed(
             prompt_tokens=512, generated_tokens=128, prefill_tok_s=prefill, decode_tok_s=decode
         ),
-        energy=EnergyCost(
-            kwh=None,
-            kwh_per_million_tokens=None,
-            cost=None,
-            cost_per_million_tokens=None,
-            price=price,
-        ),
+        energy=Energy(kwh=None, kwh_per_million_tokens=None),
     )
 
 

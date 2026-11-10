@@ -6,12 +6,11 @@ import pytest
 from typer.testing import CliRunner
 
 from localtune import cli
-from localtune.cost import DEFAULT_PRICE
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
 from localtune.predict import estimate_for, kept_in_ram, predict
-from localtune.results import RunResult, RunSettings, Speed, energy_and_cost, model_facts
+from localtune.results import RunResult, RunSettings, Speed, energy_used, model_facts
 
 runner = CliRunner()
 GPU = find_gpu_spec("RTX 4070 Ti SUPER", 16)
@@ -98,7 +97,7 @@ def saved_run(**changes) -> RunResult:
         model_facts=model_facts("qwen3:14b"),
         gpu_facts=GPU,
         speed=Speed(prompt_tokens=3 * 512, generated_tokens=3 * 256, decode_tok_s=63),
-        energy=energy_and_cost(None, None, DEFAULT_PRICE),
+        energy=energy_used(None, None),
     )
     return RunResult(**{**fields, **changes})
 

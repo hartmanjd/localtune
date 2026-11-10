@@ -11,8 +11,6 @@
 # the same computer only by rig_id, the random ID localtune made for it, which says nothing
 # about who or where anyone is. Left out are:
 #   - error messages, which can contain folder paths with a person's user name;
-#   - the electricity price and its source, which can contain a zip code, and the cost worked
-#     out from it (the energy is kept, so cost can be worked out again for any price);
 #   - the exact time of the run; only the day is kept.
 # The computer's name, user name, IP address and prompts are never saved in a run at all.
 
@@ -25,10 +23,7 @@ from pathlib import Path
 
 from localtune.results import SCHEMA_VERSION, RunResult, home_dir
 
-LEFT_OUT = {
-    "error": True,
-    "energy": {"cost", "cost_per_million_tokens", "price"},
-}
+LEFT_OUT = {"error": True}
 
 
 def public_record(run: RunResult) -> dict:

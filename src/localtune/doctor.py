@@ -1,7 +1,7 @@
 """Check that this computer is ready to benchmark, and say what to fix if it isn't."""
 
 # A benchmark needs several things outside localtune to be in place: an NVIDIA GPU that
-# nvidia-smi can see (hardware.py), power readings for energy and cost (gpu_monitor.py), an
+# nvidia-smi can see (hardware.py), power readings for energy (gpu_monitor.py), an
 # engine to run the model (llama.cpp's tools, or a local AI server like Ollama or llama-server),
 # disk space for model files, and a folder to save results in (results.py). Each check here
 # looks at one of those and comes back as ok, a warning (benchmarks work, with something
@@ -63,7 +63,7 @@ def check_power(sample: GpuSample | None) -> Check:
     return Check(
         name="Power readings",
         status="warn",
-        detail="the GPU doesn't report power, so energy and cost will be empty",
+        detail="the GPU doesn't report power, so energy will be empty",
     )
 
 
