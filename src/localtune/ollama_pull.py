@@ -223,7 +223,14 @@ def _fetch_file(url: str, target: Path, digest: str, size: int, got: Callable[[i
         raise PullError(
             f"the download broke off ({error}). Run it again to carry on where it stopped"
         ) from error
-    if have != size or f"sha256:{check.hexdigest()}" != digest:
+    # The fingerprint decides whether the file is right. The size in the library's list can be a
+    # few bytes off (it is for some models' small settings file), so a file with the right
+    # fingerprint is kept whatever its length. A connection that closes early ends the reading
+    # without an error, so a file that's still short just broke off: what arrived is kept for
+    # the next time.
+    if f"sha256:{check.hexdigest()}" != digest:
+        if have < size:
+            raise PullError("the download broke off. Run it again to carry on where it stopped")
         partial.unlink(missing_ok=True)
         raise PullError("a downloaded file came out damaged. Run it again to download it anew")
     os.replace(partial, target)
