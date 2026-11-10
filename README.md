@@ -56,9 +56,10 @@ See whether speculative decoding makes a model faster on your computer. A small 
 the same family guesses a few tokens ahead and the big model checks them all at once, so the
 answer is the same and arrives sooner when the guesses are right. With only a model name,
 `speculate` picks small models you already have as drafts, adds llama.cpp's lookup type that
-needs no second model, and measures each on eight cases: an answer that copies from the prompt
-or is written fresh, a short or a long prompt, and a temperature of 0 or 0.8. Each row shows the
-writing speed, the speed-up over no speculation, and the share of guesses the model kept:
+needs no second model, and measures each on an answer that copies from the prompt and one
+written fresh. Each row shows the writing speed, the speed-up over no speculation, and the share
+of guesses the model kept. It takes a few minutes; `--thorough` also tries a 16K-token prompt
+and a temperature of 0.8, with three answers each, and takes about half an hour:
 
 ```
 localtune speculate qwen3:14b

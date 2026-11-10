@@ -47,6 +47,10 @@ DRAFT_TYPE = "draft-simple"
 DRAFT_TYPES = ("draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark")
 LOOKUP_TYPES = ("ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "ngram-cache")
 TASKS = ("copy", "fresh")
+# The quick test answers "does this help me?" in a few minutes; the thorough one adds a long
+# prompt (a pasted document or codebase), a livelier temperature and a third answer per case.
+QUICK = {"context": "2048", "temperature": "0", "repeats": 2}
+THOROUGH = {"context": "2048,16384", "temperature": "0,0.8", "repeats": 3}
 SMALL_ENOUGH = 0.34  # a draft over a third of the big model's size costs more than it saves
 WORTH_IT = 1.05  # a speed-up under 5% is within what two runs of the same setup differ by
 
@@ -268,6 +272,32 @@ def by_length(cases: list[Case]) -> list[list[Case]]:
     for case in cases:
         groups.setdefault(case.context, []).append(case)
     return list(groups.values())
+
+
+# A rough guess of how long it all takes, said before it starts. Writing is guessed at predict's
+# formula speed (the GPU's memory speed over the model's size), a little slower on average since
+# a draft whose guesses are mostly wrong slows writing down, and reading the prompt at about 40
+# times that. Each start of llama-server reads the model from disk.
+
+EFFICIENCY = 0.55  # predict.py's share of the memory speed a model reaches when writing
+SLOWER_ON_AVERAGE = 1.3
+
+
+def rough_seconds(
+    model_gb: float,
+    bandwidth_gbs: float | None,
+    setup_count: int,
+    cases: list[Case],
+    repeats: int,
+    gen_tokens: int,
+    loads: int,
+) -> float:
+    decode = EFFICIENCY * bandwidth_gbs / model_gb if bandwidth_gbs else 30.0
+    answers = 0.0
+    for case in cases:
+        prompt = case.context or len(case.prompt) / 3
+        answers += gen_tokens / decode * SLOWER_ON_AVERAGE + prompt / (decode * 40)
+    return loads * (5 + model_gb / 1.5) + setup_count * answers * repeats
 
 
 # Starting llama-server for a setup. The big model is placed as tune would place it; the draft

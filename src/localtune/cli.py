@@ -157,7 +157,9 @@ from localtune.share import (
 from localtune.side_by_side import run_tuned_server, unload_from_ollama
 from localtune.speculate import (
     DRAFT_TYPE,
+    QUICK,
     TASKS,
+    THOROUGH,
     WORTH_IT,
     ServerOptions,
     SpeculateRun,
@@ -173,6 +175,7 @@ from localtune.speculate import (
     pick_drafts,
     refused,
     room_for,
+    rough_seconds,
     save_runs,
     setups,
     with_baselines,
@@ -2239,15 +2242,20 @@ def speculate_command(
     n_max: str = typer.Option("4,16", help="Tokens guessed ahead per step."),
     n_min: str | None = typer.Option(None, help="Fewest guessed tokens worth checking."),
     p_min: str | None = typer.Option(None, help="How sure the draft must be to keep guessing."),
-    context: str = typer.Option("2048,16384", help="Prompt lengths, in tokens."),
-    temperature: str = typer.Option("0,0.8", help="Temperatures: 0 always picks the likeliest."),
+    thorough: bool = typer.Option(
+        False, help="Also a 16K-token prompt, temperature 0.8 and 3 answers each (about 30 min)."
+    ),
+    context: str | None = typer.Option(None, help="Prompt lengths, in tokens (2048)."),
+    temperature: str | None = typer.Option(
+        None, help="Temperatures: 0 always picks the likeliest (0)."
+    ),
     task: str = typer.Option("copy,fresh", help="copy repeats the prompt, fresh writes anew."),
     prompt_file: Annotated[
         list[Path] | None,
         typer.Option(help="Your own prompt, one per text file, instead of the built-in tasks."),
     ] = None,
     gen_tokens: int = typer.Option(256, help="Tokens written per answer."),
-    repeats: int = typer.Option(3, help="Answers per case; the middle speed is kept."),
+    repeats: int | None = typer.Option(None, help="Answers per case, middle speed kept (2)."),
     kv_cache: str = typer.Option("f16", help="KV cache type: f16, q8_0 or q4_0."),
     draft_gpu_layers: int | None = typer.Option(None, help="Draft layers on the GPU (all)."),
     draft_kv_cache: str | None = typer.Option(None, help="KV cache type of the draft."),
@@ -2257,6 +2265,10 @@ def speculate_command(
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
 ) -> None:
     """Measure whether speculative decoding (a draft model guessing ahead) speeds a model up."""
+    preset = THOROUGH if thorough else QUICK
+    context = context or preset["context"]
+    temperature = temperature or preset["temperature"]
+    repeats = repeats or preset["repeats"]
     llama_server = find_tool("llama-server")
     if llama_server is None:
         console.print("llama.cpp isn't installed. Run 'localtune doctor' to install it.")
@@ -2315,12 +2327,31 @@ def speculate_command(
     hardware = detect_hardware()
     groups = by_length(cases)
     loads = len(tried) * len(groups)
+    card_spec = (
+        find_gpu_spec(hardware.gpus[gpu].name, hardware.gpus[gpu].vram_gb)
+        if gpu < len(hardware.gpus)
+        else None
+    )
+    guess = rough_seconds(
+        model_file.stat().st_size / 1e9,
+        card_spec.memory_bandwidth_gbs if card_spec else None,
+        len(tried),
+        cases,
+        repeats,
+        gen_tokens,
+        loads,
+    )
     console.print(
         f"{len(tried)} setups (the first without speculation) x {len(cases)} cases x {repeats} "
         f"answers = {len(tried) * len(cases) * repeats:,} answers. {name} is loaded {loads} "
-        "times, once per setup and prompt length.",
+        f"times, once per setup and prompt length. That takes {span_words(guess)}, roughly.",
         markup=False,
     )
+    if not thorough:
+        console.print(
+            "Add --thorough to also try a long prompt and a livelier temperature.",
+            markup=False,
+        )
     placements: dict[int, dict] = {}
     session, started, done, runs = uuid4().hex, time.monotonic(), 0, []
     card = hardware.gpus[gpu].name if gpu < len(hardware.gpus) else None
