@@ -40,7 +40,10 @@ def test_failed_and_busy_runs_are_kept_but_marked(tmp_path):
     save_result(make_run(background=Background(gpu_vram_used_gb=6.0)), folder)
     save_result(make_run(background=Background(cpu_load_pct=80)), folder)
     save_result(make_run(gpu=gpu_summary(50).model_copy(update={"baseline_vram_gb": 5.0})), folder)
+    two_cards = {"cards": [0, 1], "card_peak_vram_gb": [5.0, 4.0]}
+    save_result(make_run(gpu=gpu_summary(50).model_copy(update=two_cards)), folder)
     reasons = [row["skip_reason"] for row in combine_runs.combine(tmp_path)]
+    assert reasons[5] == "spread over 2 GPUs"
     assert reasons[0] == ""
     assert reasons[1] == "out_of_memory"
     assert reasons[2] == "busy: 6.0 GB of GPU memory in use by other programs"

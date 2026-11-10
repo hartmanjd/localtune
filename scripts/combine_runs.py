@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from localtune.background import BUSY_CPU_PCT, OTHER_VRAM_GB
-from localtune.predict import estimate_for
+from localtune.predict import estimate_for, several_gpus
 from localtune.results import RunResult, flat_record, gpu_facts, load_results, model_facts
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,12 +32,15 @@ OUT_FILE = ROOT / "data" / "all_runs.csv"
 # quietest of its readings often caught the end of the run before them, and any program using
 # the GPU holds some of its memory. A run told to use more CPU threads than the computer allows
 # makes the threads wait on each other, which can make it many times slower; that's a mistake in
-# how it was started, not something about the computer, so it's left out too.
+# how it was started, not something about the computer, so it's left out too. So is a run that
+# was spread over several GPUs, which the model has no way to describe yet.
 
 
 def skip_reason(run: RunResult) -> str:
     if run.status != "ok":
         return run.status
+    if several_gpus(run):
+        return f"spread over {len(run.gpu.cards)} GPUs"
     b = run.background
     if b and b.gpu_vram_used_gb is not None and b.gpu_vram_used_gb >= OTHER_VRAM_GB:
         return f"busy: {b.gpu_vram_used_gb:.1f} GB of GPU memory in use by other programs"

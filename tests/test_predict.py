@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from localtune import cli
+from localtune.gpu_monitor import GpuSummary
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
@@ -196,3 +197,54 @@ def test_gpus_lists_the_gpu_table():
 def test_a_search_with_no_match_says_so():
     assert runner.invoke(cli.app, ["models", "no-such-model"]).exit_code == 1
     assert runner.invoke(cli.app, ["gpus", "no-such-gpu"]).exit_code == 1
+
+
+def test_predict_says_the_biggest_context_that_fits():
+    result = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4070 Ti SUPER"])
+    assert "Biggest context that fits" in result.output
+
+
+def test_the_tesla_p100_is_in_the_gpu_table():
+    assert find_gpu_spec("Tesla P100-PCIE-16GB", 16.0).memory_bandwidth_gbs == 732
+
+
+# Two 16 GB cards hold a model neither could alone; the guesses for one GPU are left out of a
+# run that used both.
+
+
+def test_predict_counts_two_gpus_memory_together(monkeypatch):
+    card = GpuInfo(index=0, name="Tesla P100-PCIE-16GB", vram_gb=16.0, driver_version="580")
+    pc = HardwareInfo(
+        os="Linux",
+        is_wsl=False,
+        cpu_name=None,
+        cpu_threads=24,
+        ram_gb=64.0,
+        gpus=[card, card.model_copy(update={"index": 1})],
+    )
+    monkeypatch.setattr(cli, "detect_hardware", lambda: pc)
+    result = runner.invoke(cli.app, ["predict", "qwen3.8:27b"])
+    assert result.exit_code == 0
+    assert "32 GB over 2 GPUs" in result.output
+    assert "Yes, all of it" in result.output
+    assert "trained model guess" not in result.output
+
+
+def test_a_run_spread_over_two_gpus_has_no_one_gpu_estimate():
+    run = saved_run()
+    assert estimate_for(run) is not None
+    run.gpu = GpuSummary(
+        duration_s=10,
+        sample_count=20,
+        avg_power_w=None,
+        peak_power_w=None,
+        energy_wh=None,
+        baseline_vram_gb=1.0,
+        peak_vram_gb=17.0,
+        added_vram_gb=16.0,
+        avg_utilization_pct=90,
+        peak_temperature_c=60,
+        cards=[0, 1],
+        card_peak_vram_gb=[8.5, 8.5],
+    )
+    assert estimate_for(run) is None

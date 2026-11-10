@@ -83,7 +83,7 @@ def test_monitor_collects_in_the_background():
         deadline = time.monotonic() + 5
         while len(monitor.samples) < 3 and time.monotonic() < deadline:
             time.sleep(0.01)
-    assert monitor.baseline.time_s == 0
+    assert monitor.baseline[0].time_s == 0
     assert monitor.summary().sample_count >= 3
 
 
@@ -108,3 +108,53 @@ def test_the_end_of_the_last_benchmark_doesnt_count_as_busy():
     )
     seen = gpu_monitor.other_use(lambda: next(readings), readings=3, interval_s=0)
     assert seen.utilization_pct == 0
+
+
+# A computer with two GPUs. Readings are typed in the way nvidia-smi answers for every card at
+# once: one line per card, starting with its number.
+
+
+def test_every_card_is_read_from_one_answer():
+    cards = gpu_monitor.parse_cards("0, 120.5, 8192, 45, 60, 1300\n1, 110, 7168, 40, 55, 1300\n", 1)
+    assert sorted(cards) == [0, 1]
+    assert cards[1].vram_used_gb == 7.0
+
+
+def two_cards(second_card_gb):
+    clock = itertools.count()
+
+    def read():
+        t = next(clock)
+        loaded = t > 0  # the first reading is taken before the model loads
+        return {
+            0: sample(t, 100.0, vram_gb=8.0 if loaded else 0.5, temperature=60),
+            1: sample(t, 80.0, vram_gb=second_card_gb if loaded else 0.5, temperature=70),
+        }
+
+    return read
+
+
+def watch(read):
+    monitor = GpuMonitor(interval_s=0.01, cards_reader=read)
+    with monitor:
+        deadline = time.monotonic() + 5
+        while len(monitor.readings) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    return monitor.summary()
+
+
+def test_a_model_spread_over_two_cards_adds_them_up():
+    summary = watch(two_cards(second_card_gb=7.5))
+    assert summary.cards == [0, 1]
+    assert summary.card_peak_vram_gb == [8.0, 7.5]
+    assert summary.peak_vram_gb == 15.5
+    assert summary.baseline_vram_gb == 1.0
+    assert summary.avg_power_w == 180
+    assert summary.peak_temperature_c == 70
+
+
+def test_a_card_the_model_didnt_touch_is_left_out():
+    summary = watch(two_cards(second_card_gb=0.5))
+    assert summary.cards == [0]
+    assert summary.peak_vram_gb == 8.0
+    assert summary.avg_power_w == 100

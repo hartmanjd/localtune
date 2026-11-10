@@ -21,7 +21,7 @@ from pathlib import Path
 from localtune.features import FEATURES, inputs, number
 from localtune.gpus import GpuSpec
 from localtune.hardware import HardwareInfo
-from localtune.predict import Prediction, estimate_for
+from localtune.predict import Prediction, estimate_for, several_gpus
 from localtune.results import ModelFacts, RunResult, RunSettings, flat_record, flatten, home_dir
 from localtune.runners.llamacpp import DEPTH_FROM
 from localtune.tune import DEFAULT_UBATCH
@@ -67,6 +67,8 @@ def trained_estimate(row: dict) -> float | None:
 
 
 def trained_for_run(run: RunResult) -> float | None:
+    if several_gpus(run):
+        return None
     row = flat_record(run) | {
         "estimate.decode_tok_s": estimate_for(run),
         "estimate.own_ram_decode_tok_s": estimate_for(run, own_ram=True),

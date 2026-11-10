@@ -44,7 +44,7 @@ from localtune.cpus import ram_bandwidth_gbs
 from localtune.doctor import KNOWN_SERVERS, is_ready, needs_llama_cpp, run_checks
 from localtune.eta import SweepClock, guess_run, pace, raw_seconds
 from localtune.gguf import GgufError, read_layout
-from localtune.gpu_monitor import GpuMonitor, GpuSample, read_sample
+from localtune.gpu_monitor import GpuMonitor, GpuSample, GpuSummary, read_sample
 from localtune.gpus import find_gpu_spec, load_gpu_table
 from localtune.hardware import GpuInfo, HardwareInfo, detect_hardware, find_nvidia_smi
 from localtune.install import (
@@ -76,7 +76,13 @@ from localtune.ollama_pull import (
     pull,
     start_ollama,
 )
-from localtune.predict import Prediction, estimate_for, overflowed_gpu, predict
+from localtune.predict import (
+    Prediction,
+    estimate_for,
+    kv_bytes_per_token,
+    overflowed_gpu,
+    predict,
+)
 from localtune.quality import (
     CHUNKS,
     CONTEXT,
@@ -143,12 +149,14 @@ from localtune.tune import (
     DEFAULTS,
     KV_CACHE_SIZE,
     NOISE,
+    RESERVED_GB,
     SERVER_PORT,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
     UBATCH_SIZES,
     answer_seconds,
     as_good_as,
+    biggest_context,
     combinations,
     default_run,
     describe,
@@ -159,6 +167,7 @@ from localtune.tune import (
     run_flags,
     server_context,
     server_flags,
+    shared_vram_gb,
     split_settings,
     too_full,
 )
@@ -328,23 +337,46 @@ def predict_command(
             console.print(f"{hw.gpus[gpu].name} isn't in localtune's GPU table yet.", markup=False)
             raise typer.Exit(1)
 
+    cards = 1 if gpu_name else len(hw.gpus)
+    if cards > 1:
+        spec = spec.model_copy(update={"vram_gb": shared_vram_gb(hw.gpus, gpu)})
     tokens = prompt_tokens + gen_tokens
     p = predict(*found, spec, tokens, hw.ram_gb)
+    table_model, file = found
+    room = biggest_context(
+        file.size_bytes,
+        kv_bytes_per_token(table_model),
+        spec.vram_gb,
+        table_model.context_length,
+    )
     trained = None
     facts = model_facts(model)
-    if p.decode_tok_s is not None and facts is not None:
+    if p.decode_tok_s is not None and facts is not None and cards == 1:
         ram_bandwidth = ram_bandwidth_gbs(hw.cpu_name, hw.cpu_threads)
         own_ram = predict(*found, spec, tokens, hw.ram_gb, ram_bandwidth)
         planned = planned_run(p, facts, spec, hw, gpu, prompt_tokens, gen_tokens, own_ram)
         trained = trained_estimate(planned)
-    show_prediction(p, use, trained)
+    show_prediction(p, use, trained, room, cards)
 
 
-def show_prediction(p: Prediction, use: str | None, trained: float | None = None) -> None:
-    table = Table(title=f"Estimate for {p.model} on {p.gpu}", show_header=False)
+def context_text(tokens: int) -> str:
+    return f"about {tokens:,} tokens"
+
+
+def show_prediction(
+    p: Prediction,
+    use: str | None,
+    trained: float | None = None,
+    room: int | None = None,
+    cards: int = 1,
+) -> None:
+    on = p.gpu if cards == 1 else f"{cards} GPUs ({p.gpu} first)"
+    table = Table(title=f"Estimate for {p.model} on {on}", show_header=False)
     table.add_row("Model file", f"{p.file_gb:.1f} GB ({p.quant})")
     table.add_row(f"Conversation ({use or 'short chat'})", f"{p.conversation_gb:.1f} GB")
-    table.add_row("GPU memory", f"{p.vram_gb:g} GB, {p.memory_bandwidth_gbs:,.0f} GB/s")
+    total = p.vram_gb + RESERVED_GB * (cards - 1)  # shared_vram_gb took this off for the fit
+    memory = f"{total:g} GB" + (f" over {cards} GPUs" if cards > 1 else "")
+    table.add_row("GPU memory", f"{memory}, {p.memory_bandwidth_gbs:,.0f} GB/s")
     if p.fits_on_computer is False:
         fits = (
             f"[red]No[/red]: about {p.in_ram_gb:.1f} GB would have to go in RAM, more than is free"
@@ -354,6 +386,8 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
     else:
         fits = "Yes, all of it"
     table.add_row("Fits on the GPU", fits)
+    if room is not None:
+        table.add_row("Biggest context that fits", context_text(room))
     if p.decode_tok_s is not None:
         table.add_row("Decode, formula guess", f"about {p.decode_tok_s:,.0f} tok/s")
     if trained is not None:
@@ -366,6 +400,12 @@ def show_prediction(p: Prediction, use: str | None, trained: float | None = None
         "out from the GPU's memory speed and the model's size, and the trained model learned "
         "from real runs."
         + (" It assumes a good GPU/RAM split, which 'localtune tune' finds." if p.in_ram_gb else "")
+        + (
+            f" This computer has {cards} GPUs, and the model is spread over them: the memory is "
+            "counted together, but the speed guess is for one GPU and may be off."
+            if cards > 1
+            else ""
+        )
     )
     downloaded = find_ollama_model(p.model) is not None
     console.print(
@@ -762,7 +802,7 @@ def starting_split(model_file: Path, gpu: int, tokens: int, kv_cache: str | None
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return {}
-    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    size, vram_gb = model_file.stat().st_size, shared_vram_gb(gpus, gpu)
     on_gpu = first_guess(size, layout, vram_gb, tokens, kv_cache or "f16")
     if on_gpu is None:
         return {}
@@ -901,6 +941,32 @@ def choose_server_and_model(url: str | None, wanted: str | None):
     return server, model
 
 
+def peak_vram_text(gpu: GpuSummary) -> str:
+    if len(gpu.cards) < 2:
+        return f"{gpu.peak_vram_gb:.1f} GB"
+    each = " + ".join(f"{peak:.1f}" for peak in gpu.card_peak_vram_gb)
+    return f"{gpu.peak_vram_gb:.1f} GB over {len(gpu.cards)} GPUs ({each})"
+
+
+# The longest conversation the run's model could hold on the GPUs it used with all of it still
+# there (tune.biggest_context), at the run's own KV cache type.
+
+
+def run_context_room(result: RunResult) -> int | None:
+    facts, cards = result.model_facts, result.gpu.cards if result.gpu else []
+    gpus = [g for g in result.hardware.gpus if g.index in (cards or [result.gpu_index])]
+    if facts is None or not gpus:
+        return None
+    kv_cache = result.settings.kv_cache_k
+    return biggest_context(
+        facts.file_bytes,
+        kv_bytes_per_token(facts),
+        shared_vram_gb(gpus),
+        facts.context_length,
+        kv_cache if kv_cache in KV_CACHE_SIZE else "f16",
+    )
+
+
 def show_run(result: RunResult) -> None:
     speed, gpu, energy = result.speed, result.gpu, result.energy
     settings = result.settings
@@ -920,11 +986,14 @@ def show_run(result: RunResult) -> None:
     if speed.ttft_ms is not None:
         table.add_row("Time to first token", f"{speed.ttft_ms:,.0f} ms")
     if gpu is not None:
-        table.add_row("Peak VRAM", f"{gpu.peak_vram_gb:.1f} GB")
+        table.add_row("Peak VRAM", peak_vram_text(gpu))
+        room = run_context_room(result)
+        if room is not None:
+            table.add_row("Biggest context that fits", context_text(room))
         if gpu.avg_power_w is not None:
             power = f"{gpu.avg_power_w:.0f} W avg, {gpu.peak_power_w:.0f} W peak"
             idle = result.background.gpu_power_w if result.background else None
-            if idle is not None:
+            if idle is not None and len(gpu.cards) < 2:  # the idle reading is one card's
                 power += f" ({idle:.0f} W before the run)"
             table.add_row("Power", power)
     if energy.kwh is not None:
@@ -1413,7 +1482,7 @@ def find_splits(
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return None
-    size, vram_gb = model_file.stat().st_size, gpus[gpu].vram_gb
+    size, vram_gb = model_file.stat().st_size, shared_vram_gb(gpus, gpu)
     guesses = {cache: first_guess(size, layout, vram_gb, tokens, cache) for cache in KV_CACHE_SIZE}
     if guesses["f16"] is None:
         return None
@@ -1857,7 +1926,7 @@ def session_guess(
     runs = len(combinations(prompt_tokens))
     if not any(value is not None for value in given.values()):
         tokens = prompt_tokens + gen_tokens
-        runs += SPLIT_TRIES * split_searches(model_file, hardware.gpus[gpu].vram_gb, tokens)
+        runs += SPLIT_TRIES * split_searches(model_file, shared_vram_gb(hardware.gpus, gpu), tokens)
     return runs * one_run
 
 
@@ -1920,7 +1989,7 @@ def guessed_split(model_file: Path, gpu: int, tokens: int) -> dict:
         layout = read_layout(model_file)
     except (GgufError, OSError):
         return {}
-    guess = first_guess(model_file.stat().st_size, layout, gpus[gpu].vram_gb, tokens)
+    guess = first_guess(model_file.stat().st_size, layout, shared_vram_gb(gpus, gpu), tokens)
     return {} if guess is None else split_settings(guess, layout)
 
 

@@ -10,7 +10,7 @@ Each run measures:
 | Prefill tok/s | How fast the model reads your prompt |
 | Decode tok/s | How fast it writes the answer |
 | TTFT ms | Time to first token: the wait before the answer starts |
-| Peak VRAM GB | GPU memory used at the busiest moment |
+| Peak VRAM GB | GPU memory used at the busiest moment (added up when a model is spread over several GPUs) |
 | Avg / peak W | GPU power draw |
 | Energy Wh | Electricity the GPU used during the run |
 
