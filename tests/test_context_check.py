@@ -220,8 +220,9 @@ def test_the_command_proves_and_saves_a_size(monkeypatch, tmp_path):
     model = on_this_pc(monkeypatch, tmp_path, answer)
     result = runner.invoke(cli.app, ["context", str(model)])
     assert result.exit_code == 0
-    assert "Proven:" in result.output
-    assert "40,960 tokens, all the model can take" in result.output
+    assert "Measured:" in result.output
+    assert "40,960 tokens" in result.output
+    assert "1.20 GB left free" in result.output
     assert latest_proof("rig", "model.gguf").proven_context == 40_960
 
 
@@ -232,7 +233,7 @@ def test_the_command_says_when_nothing_could_be_proven(monkeypatch, tmp_path):
     model = on_this_pc(monkeypatch, tmp_path, answer)
     result = runner.invoke(cli.app, ["context", str(model)])
     assert result.exit_code == 1
-    assert "No size could be proven" in result.output
+    assert "No size could be measured" in result.output
 
 
 def test_predict_shows_a_size_proven_on_this_computer(monkeypatch):

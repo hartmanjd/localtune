@@ -2149,20 +2149,22 @@ def show_context_proof(proof: ContextProof, model_limit: int | None) -> None:
             f"{tried.context:,}",
             "yes" if tried.loaded else "no",
             f"{tried.peak_vram_gb:.1f} GB" if tried.peak_vram_gb is not None else "",
-            f"{tried.free_gb:.1f} GB" if tried.free_gb is not None else "",
+            f"{tried.free_gb:.2f} GB" if tried.free_gb is not None else "",
             result,
         )
     console.print(table)
     if proof.proven_context is None:
         console.print(
-            "No size could be proven. Closing other programs that use the GPU frees memory; "
+            "No size could be measured. Closing other programs that use the GPU frees memory; "
             "then run this again."
         )
         return
+    best = next(t for t in proof.tries if t.context == proof.proven_context)
+    limit = f" (model limit {model_limit:,})" if model_limit else ""
     console.print(
-        f"[green]Proven:[/green] {context_text(proof.proven_context, model_limit)} with the whole "
-        f"model on the GPU and at least {SPILL_MARGIN_GB:g} GB left free. "
-        f"The formula said about {proof.formula_context:,}."
+        f"[green]Measured:[/green] {proof.proven_context:,} tokens{limit} fit with the whole "
+        f"model on the GPU and {best.free_gb:.2f} GB left free. "
+        f"The formula guess was about {proof.formula_context:,}."
     )
 
 
