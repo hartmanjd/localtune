@@ -377,9 +377,26 @@ def test_run_warns_and_notes_when_another_program_is_busy(monkeypatch, tmp_path)
     assert "9.3 GB of the GPU's memory is already in use and the CPU is already 40% busy" in (
         result.output
     )
-    assert "ollama stop" in result.output
+    said = " ".join(result.output.split())
+    assert "If the localtune Hub has a model loaded, quit localtune" in said
+    assert "ollama stop" in said
     assert result.exit_code == 0
     assert load_results()[0].background == busy
+
+
+def test_the_busy_warning_names_the_hub_when_llama_server_is_on_the_gpu(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    busy = Background(gpu_utilization_pct=0, gpu_vram_used_gb=15.4, cpu_load_pct=2)
+    monkeypatch.setattr(cli, "read_background", lambda gpu_index=0: busy)
+    monkeypatch.setattr(cli, "find_nvidia_smi", lambda: tmp_path / "nvidia-smi")
+    monkeypatch.setattr(
+        cli, "gpu_programs", lambda nvidia_smi, gpu=0: ["llama-server.exe  (memory not reported)"]
+    )
+    wide_terminal(monkeypatch)
+    result = runner.invoke(cli.app, ["run", str(model)])
+    said = " ".join(result.output.split())
+    assert "llama-server is using the GPU, so the localtune Hub most likely has a model" in said
+    assert "ollama" not in said
 
 
 def test_run_starts_on_a_fresh_reading_once_the_gpu_is_freed(monkeypatch, tmp_path):

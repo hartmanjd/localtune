@@ -895,16 +895,35 @@ def usable_context(model_file: Path, gpu: int, kv_cache: str = "f16") -> int:
 # The same reading is saved with the run.
 
 
+# Where a loaded model usually comes from. The localtune Hub keeps its model in llama-server
+# until its helper is closed, and that is the common case; when llama-server is among the
+# programs on the GPU, the hint says so outright. Ollama keeps one loaded for a few minutes too.
+
+
+def loaded_model_hint(gpu: int) -> str:
+    nvidia_smi = find_nvidia_smi()
+    programs = gpu_programs(nvidia_smi, gpu) if nvidia_smi else []
+    close_hub = (
+        "quit localtune from its icon near the clock (or close the window it was started from)"
+    )
+    ollama = "For a model Ollama has loaded, 'ollama ps' shows it and 'ollama stop MODEL' frees it."
+    if any(program.lower().startswith("llama-server") for program in programs):
+        return (
+            "llama-server is using the GPU, so the localtune Hub most likely has a model "
+            f"loaded: to free it, {close_hub}."
+        )
+    return f"If the localtune Hub has a model loaded, {close_hub}. {ollama}"
+
+
 def warn_if_busy(gpu: int) -> Background:
     background = read_background(gpu)
     reasons = busy_reasons(background)
     if reasons:
         console.print(
             f"[yellow]Heads-up: {' and '.join(reasons)}.[/yellow] Another program is using the "
-            "computer (like a game, a video or video call, or Ollama keeping a model loaded), "
+            "computer (like a game, a video or video call, or a model that is still loaded), "
             "so these results may be slower than they should be. For trustworthy numbers, "
-            "close it first. 'ollama ps' shows a model Ollama has loaded, and 'ollama stop "
-            "MODEL' frees it."
+            f"close it first. {loaded_model_hint(gpu)}"
         )
         if show_memory_meter(gpu) == "free":
             console.print("[green]The GPU is free now.[/green]")
