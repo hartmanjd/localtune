@@ -117,7 +117,9 @@ def run_tuned_server(
     url = f"http://127.0.0.1:{port}"
     tokens = options.prompt_tokens + options.gen_tokens
     flags = server_args(best, placement, tokens, threads, gpu, port=port)
-    with tempfile.TemporaryDirectory() as folder:
+    # On Windows a stopped server can hold its log a moment longer; a log that can't be deleted
+    # yet must not fail the run.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
         log = Path(folder) / "llama-server.log"
         with log.open("w", encoding="utf-8") as output:
             process = start(

@@ -91,7 +91,7 @@ def load_and_measure(
 ) -> ContextTry:
     port = free_port()
     loaded = True
-    with tempfile.TemporaryDirectory() as folder:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
         log = Path(folder) / "llama-server.log"
         with log.open("w", encoding="utf-8") as output, monitor(gpu_index) as gpu_monitor:
             process = start(
