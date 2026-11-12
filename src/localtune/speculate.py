@@ -462,7 +462,7 @@ def measure_setup(
     url = f"http://127.0.0.1:{port}"
     rows: list[dict] = []
     build = None
-    with tempfile.TemporaryDirectory() as folder:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
         log = Path(folder) / "llama-server.log"
         with log.open("w", encoding="utf-8") as output, monitor(options.gpu) as gpu_monitor:
             process = start(
