@@ -217,7 +217,10 @@ from localtune.uses import (
     use_percent,
 )
 
-app = typer.Typer()
+# The two tab-completion options typer adds by itself are left out: they crowd the help of a
+# tool whose commands are short enough to type.
+
+app = typer.Typer(add_completion=False)
 console = Console()
 
 # The help screens are at most 80 columns wide, and narrower in a narrower window, so their boxes

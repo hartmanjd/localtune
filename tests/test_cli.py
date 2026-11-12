@@ -66,6 +66,12 @@ def test_command_list_has_an_empty_line_after_each_command():
     assert rows[0] != "" and rows[-1] != ""
 
 
+def test_help_leaves_out_the_tab_completion_options():
+    output = runner.invoke(cli.app, ["--help"]).output
+    assert "--version" in re.sub(r"\x1b\[[0-9;]*m", "", output)
+    assert "completion" not in output
+
+
 def test_info_shows_the_hardware(monkeypatch):
     wide_terminal(monkeypatch)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
