@@ -53,6 +53,17 @@ RENTED_GPU = GpuInfo(
 )
 
 
+def test_command_list_has_an_empty_line_after_each_command():
+    lines = runner.invoke(cli.app, ["--help"]).output.splitlines()
+    start = next(i for i, line in enumerate(lines) if "Commands" in line)
+    end = next(i for i, line in enumerate(lines) if i > start and line.startswith("╰"))
+    rows = [line.strip("│").rstrip() for line in lines[start + 1 : end]]
+    names = [i for i, row in enumerate(rows) if row[1:2].strip()]
+    assert len(names) > 10
+    assert all(rows[i - 1] == "" for i in names[1:])
+    assert rows[0] != "" and rows[-1] != ""
+
+
 def test_info_shows_the_hardware(monkeypatch):
     wide_terminal(monkeypatch)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
