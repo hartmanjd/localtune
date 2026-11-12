@@ -4,7 +4,7 @@
 # run on my GPU, and how fast? It works it out from the two tables shipped with localtune,
 # without running anything: the model's file size and how much of it each word uses (models.py),
 # and the GPU's memory and memory bandwidth (gpus.py). It is an estimate, not a measurement:
-# "localtune run" measures the real speed, and the runs people save are what a trained
+# "localtune measure" measures the real speed, and the runs people save are what a trained
 # prediction model will learn from later.
 #
 # Writing speed (decode) is set by memory: every new word reads the part of the model it uses
@@ -105,7 +105,7 @@ def predict(
 
 
 # The same estimate for a run that was measured, from the model and GPU facts saved with it
-# (results.py), so "localtune run", "tune", "sweep" and "results" can show it beside the real
+# (results.py), so "localtune measure", "tune", "sweep" and "results" can show it beside the real
 # speed: how far off the simple formula was, for this model on this computer. It is worked out
 # for the run's own conversation length. Runs saved before the facts were kept, or with a model
 # or GPU not in the tables, have no estimate. Neither has a run spread over several GPUs

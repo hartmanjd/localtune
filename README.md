@@ -90,7 +90,24 @@ Benchmark any model from [Ollama's library](https://ollama.com/library), or a `.
 A model you don't have yet is downloaded first; Ollama itself doesn't need to be installed:
 
 ```
-localtune run qwen3:14b
+localtune measure qwen3:14b
+```
+
+Test it the way you'll use it with `--use`. Each name sets fixed prompt and answer lengths, the
+same for every model:
+
+| `--use` | Prompt the model reads | Answer it writes |
+|---|---|---|
+| `chat` | 512 tokens | 256 tokens |
+| `code` | 8,000 tokens | 512 tokens |
+| `documents` | 16,000 tokens | 256 tokens |
+
+A number like `--use 30` instead makes the conversation (prompt and answer together) fill 30% of
+the biggest context the model can have on your computer, so small and big models get a similar
+load. The answer is 256 tokens and the prompt is the rest:
+
+```
+localtune measure qwen3:14b --use 30
 ```
 
 Find the fastest llama.cpp settings for it on your computer, and get a ready-to-use
@@ -146,7 +163,7 @@ Windows (PowerShell):
 $env:LOCALTUNE_LLAMA_DIR = "C:\llama.cpp\build\bin\Release"
 ```
 
-That folder is used before anything else, by `doctor`, `run` and `tune` alike, and before a
+That folder is used before anything else, by `doctor`, `measure` and `tune` alike, and before a
 folder doctor saved. Add the line to your shell's startup file (such as `~/.bashrc`) to keep it
 set in new terminals.
 
@@ -155,7 +172,7 @@ its usual port on this computer. A server on another port, or on another compute
 give its address with `--url`.
 
 ```
-localtune run -b api --url http://127.0.0.1:8081
+localtune measure -b api --url http://127.0.0.1:8081
 ```
 
 ## Data sources

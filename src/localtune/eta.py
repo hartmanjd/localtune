@@ -2,7 +2,7 @@
 
 # A run can take seconds or most of an hour: a model that fits on the GPU writes dozens of
 # words a second, but one that is partly kept in RAM (too big for the GPU, or --gpu-layers)
-# may write two. People want to know whether they can walk away, so "localtune run", "tune"
+# may write two. People want to know whether they can walk away, so "localtune measure", "tune"
 # and "sweep" (cli.py) show how long is left, and the loaders count it down (animations.py).
 #
 # The guess starts from predict's formula (predict.py): how fast this model should write on

@@ -2,6 +2,8 @@
 # real model and GPU tables. On an RTX 4070 Ti SUPER (672 GB/s), qwen3:14b's 9,276,184,896-byte
 # file gives 0.55 x 672 / 9.276 = 39.8 tok/s by hand.
 
+import re
+
 import pytest
 from typer.testing import CliRunner
 
@@ -54,7 +56,7 @@ def test_predict_for_a_named_gpu():
     assert "Yes, all of it" in result.output
     assert "Decode, formula guess" in result.output
     assert "about 40 tok/s" in result.output
-    assert "localtune run qwen3:14b" in result.output
+    assert "localtune measure qwen3:14b" in result.output
     assert "ollama pull" not in result.output
 
 
@@ -84,7 +86,7 @@ def test_predict_for_this_computers_gpu(monkeypatch):
     result = runner.invoke(cli.app, ["predict", "llama3.1:405b"])
     assert result.exit_code == 0
     assert "formula guess" not in result.output
-    assert "localtune run" not in result.output
+    assert "localtune measure" not in result.output
 
 
 def saved_run(**changes) -> RunResult:
@@ -249,3 +251,21 @@ def test_a_run_spread_over_two_gpus_has_no_one_gpu_estimate():
         card_peak_vram_gb=[8.5, 8.5],
     )
     assert estimate_for(run) is None
+
+
+def test_predict_with_a_percent_fills_part_of_the_biggest_context():
+    short = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4090"])
+    full = runner.invoke(cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4090", "--use", "90"])
+    assert full.exit_code == 0
+    assert "Conversation (90% of the context)" in full.output
+    assert "localtune measure qwen3:14b --use 90" in full.output
+    gb = re.compile(r"Conversation \([^)]*\)\s*│?\s*([\d.]+) GB")
+    assert float(gb.search(full.output).group(1)) > float(gb.search(short.output).group(1))
+
+
+def test_predict_refuses_a_percent_over_100():
+    result = runner.invoke(
+        cli.app, ["predict", "qwen3:14b", "--gpu-name", "RTX 4090", "--use", "150"]
+    )
+    assert result.exit_code == 1
+    assert "from 1 to 100" in result.output

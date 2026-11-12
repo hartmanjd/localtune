@@ -3,7 +3,7 @@
 # Ollama stores every model it downloads as a .gguf file, the same kind of file llama.cpp
 # reads, but under a fingerprint name like sha256-a8cc... in its own folder. A small "manifest"
 # file per model name (qwen3:14b) says which of those files is the model. Reading it lets
-# "localtune run qwen3:14b" benchmark Ollama's copy with llama.cpp (runners/llamacpp.py)
+# "localtune measure qwen3:14b" benchmark Ollama's copy with llama.cpp (runners/llamacpp.py)
 # without anyone looking up the file by hand, and saves the run under the name people know.
 # Only Ollama's files are read; Ollama itself doesn't need to be running.
 

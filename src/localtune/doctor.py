@@ -89,7 +89,7 @@ def check_servers(servers: list[str]) -> Check:
         status="warn",
         detail="none on the usual ports",
         fix=(
-            "Only needed for 'localtune run -b api': start Ollama, llama-server or LM Studio. "
+            "Only needed for 'localtune measure -b api': start Ollama, llama-server or LM Studio. "
             "A server on another port or computer works too: give its address with --url."
         ),
     )
@@ -149,7 +149,7 @@ def find_local_servers(
     return found
 
 
-# Ready means nothing failed and there's an engine "localtune run" can use: llama-bench, or a
+# Ready means nothing failed and there's an engine "localtune measure" can use: llama-bench, or a
 # running local AI server (for "-b api"). When llama.cpp is the missing piece on a computer with
 # a working GPU, install.py can fill it in.
 

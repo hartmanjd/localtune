@@ -63,7 +63,7 @@ def trained_estimate(row: dict) -> float | None:
 
 
 # A finished run's own guess, from the run as it was saved: the same row the model was trained on
-# (scripts/combine_runs.py), so 'localtune run' can show it beside the measured speed.
+# (scripts/combine_runs.py), so 'localtune measure' can show it beside the measured speed.
 
 
 def trained_for_run(run: RunResult) -> float | None:
