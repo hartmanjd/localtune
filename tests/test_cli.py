@@ -318,9 +318,9 @@ def test_measure_is_the_new_name_and_run_still_works(monkeypatch, tmp_path):
 
 def test_measure_help_says_how_many_tokens_each_use_is(monkeypatch):
     wide_terminal(monkeypatch)
-    output = re.sub(r"\s+", " ", runner.invoke(cli.app, ["measure", "--help"]).output)
-    output = re.sub(r" ?│ ?", " ", output)
-    assert "code = 8,000 tokens in, 512 out" in re.sub(r"\s+", " ", output)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli.app, ["measure", "--help"]).output)
+    output = re.sub(r"\s+", " ", re.sub(r"│", " ", output))
+    assert "code = 8,000 tokens in, 512 out" in output
 
 
 def test_measure_with_a_percent_fills_part_of_the_models_context(monkeypatch, tmp_path):
