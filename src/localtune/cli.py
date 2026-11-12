@@ -27,6 +27,7 @@ from uuid import uuid4
 
 import typer
 from rich.console import Console
+from rich.padding import Padding
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -218,6 +219,39 @@ console = Console()
 HELP_WIDTH = 80
 if rich_utils.MAX_WIDTH is None:
     rich_utils.MAX_WIDTH = min(HELP_WIDTH, shutil.get_terminal_size().columns)
+
+
+# The command list gets one empty line after each command's description, so every command stands
+# on its own. typer draws the list itself and has no setting for this, so its drawing is handed a
+# stand-in console that adds the empty lines just before the list is printed. If a later typer
+# draws the list another way, the list is simply printed as typer made it.
+class SpacedCommandList:
+    def __init__(self, console: Console) -> None:
+        self.console = console
+
+    def print(self, *things, **options) -> None:
+        table = getattr(things[0], "renderable", None) if things else None
+        if isinstance(table, Table) and len(table.columns) > 1:
+            descriptions = getattr(table.columns[1], "_cells", None)
+            if isinstance(descriptions, list):
+                descriptions[:-1] = [Padding(text, (0, 0, 1, 0)) for text in descriptions[:-1]]
+        self.console.print(*things, **options)
+
+    def __getattr__(self, name: str):
+        return getattr(self.console, name)
+
+
+typer_command_list = getattr(rich_utils, "_print_commands_panel", None)
+
+
+def spaced_command_list(*args, **options) -> None:
+    if isinstance(options.get("console"), Console):
+        options["console"] = SpacedCommandList(options["console"])
+    typer_command_list(*args, **options)
+
+
+if typer_command_list is not None:
+    rich_utils._print_commands_panel = spaced_command_list
 
 
 # "localtune" on its own plays the logo (animations.py) and lists the commands, and

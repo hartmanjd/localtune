@@ -4,6 +4,7 @@
 
 import csv
 import itertools
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -51,6 +52,18 @@ RENTED_GPU = GpuInfo(
     pcie_gen=3,
     pcie_lanes=8,
 )
+
+
+def test_command_list_has_an_empty_line_after_each_command():
+    output = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli.app, ["--help"]).output)
+    lines = output.splitlines()
+    start = next(i for i, line in enumerate(lines) if "Commands" in line)
+    end = next(i for i, line in enumerate(lines) if i > start and " " not in line.strip())
+    rows = [line.strip()[1:-1].rstrip() for line in lines[start + 1 : end]]
+    names = [i for i, row in enumerate(rows) if row[1:2].strip()]
+    assert len(names) > 10
+    assert all(rows[i - 1] == "" for i in names[1:])
+    assert rows[0] != "" and rows[-1] != ""
 
 
 def test_info_shows_the_hardware(monkeypatch):
