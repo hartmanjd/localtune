@@ -110,8 +110,7 @@ load. The answer is 256 tokens and the prompt is the rest:
 localtune measure qwen3:14b --use 30
 ```
 
-Find the fastest llama.cpp settings for it on your computer, and get a ready-to-use
-`llama-server` command:
+Find the fastest llama.cpp settings for it on your computer:
 
 ```
 localtune tune qwen3:14b

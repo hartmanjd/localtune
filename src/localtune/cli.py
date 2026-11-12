@@ -187,7 +187,6 @@ from localtune.tune import (
     KV_CACHE_SIZE,
     NOISE,
     RESERVED_GB,
-    SERVER_PORT,
     SPILL_MARGIN_GB,
     SPLIT_TRIES,
     UBATCH_SIZES,
@@ -201,9 +200,7 @@ from localtune.tune import (
     fastest,
     find_best_split,
     first_guess,
-    run_flags,
     server_context,
-    server_flags,
     shared_vram_gb,
     split_settings,
     too_full,
@@ -1189,13 +1186,13 @@ def show_overflow(result: RunResult) -> None:
     console.print(f"  localtune tune {model}", markup=False, highlight=False)
 
 
-# "localtune tune": benchmarks one model with every combination of settings in tune.py, one
-# run after another, and shows which was fastest on this computer, with the options that use
-# it in "localtune measure". Each run is saved like a "localtune measure" (with the same
-# tune_id), so the whole session becomes data. It says how long is left, estimated from the
-# runs so far, and Ctrl+C stops it with the finished runs kept. Settings that aren't tuned,
-# like how many layers go on the GPU, can be fixed for every run, which is how a model too big
-# for the GPU gets tuned. When a q8_0 or q4_0 KV cache wins, it then measures how much that
+# "localtune tune": benchmarks one model with every combination of settings in tune.py, one run
+# after another, and shows which was fastest on this computer. It only reports: how to run a model
+# at the settings it found is left out on purpose. Each run is saved like a "localtune measure"
+# (with the same tune_id), so the whole session becomes data. It says how long is left, estimated
+# from the runs so far, and Ctrl+C stops it with the finished runs kept. Settings that aren't
+# tuned, like how many layers go on the GPU, can be fixed for every run, which is how a model too
+# big for the GPU gets tuned. When a q8_0 or q4_0 KV cache wins, it then measures how much that
 # cache changes the answers (quality.py), since speed tests can't see it.
 
 
@@ -1276,30 +1273,14 @@ def tune(
 
     placement_of = session.placement_of
 
-    def command_for(run: RunResult) -> str:
-        placement = placement_of(run)
-        fixed = {
-            "--use": use,
-            "--prompt-tokens": given_prompt,
-            "--gen-tokens": given_gen,
-            "--gpu-layers": placement["gpu_layers"],
-            "--cpu-moe": placement.get("cpu_moe_layers"),
-            "--threads": threads,
-        }
-        flags = "".join(f" {flag} {value}" for flag, value in fixed.items() if value is not None)
-        return f"{model}{flags}"
-
     def split_of(run: RunResult) -> str:
         return describe_placement(placement_of(run), session.layers)
 
     splits_differ = len({str(p) for p in placements.values() if p is not None}) > 1
-    best = show_tune(
-        runs, command_for, planned=session.planned, split_of=split_of if splits_differ else None
-    )
+    best = show_tune(runs, planned=session.planned, split_of=split_of if splits_differ else None)
     if best is None:
         raise typer.Exit(1)
     tokens = prompt_tokens + gen_tokens
-    show_server_command(best, model_file, placement_of(best), tokens, threads, gpu)
     cache = best.settings.kv_cache_k
     if cache in ("q8_0", "q4_0"):
         found = None
@@ -1309,7 +1290,7 @@ def tune(
             caches = {"f16": f16, cache: placement_of(best)}
             console.print(f"Checking how much the {cache} KV cache changes the model's answers.")
             found = measure_caches(model_file, model_name, caches, gpu, context, reuse=True)
-        if not show_tune_quality(found, cache, runs, command_for):
+        if not show_tune_quality(found, cache, runs):
             console.print(
                 f"A {cache} KV cache saves memory but can make answers slightly worse than f16. "
                 f"'localtune quality {model}' measures how much."
@@ -1325,6 +1306,7 @@ def tune(
             repetitions,
             threads,
             gpu,
+            hint=False,
         )
     console.print(f"All runs saved to {results_file()}")
 
@@ -1416,11 +1398,13 @@ def compare_with_ollama(
     repetitions: int,
     threads: int | None = None,
     gpu: int = 0,
+    hint: bool = True,
 ) -> bool:
     server = find_server(f"http://127.0.0.1:{KNOWN_SERVERS['Ollama']}")
     name = pick_model(server.models, model_name) if server and server.name == "Ollama" else None
     if name is None:
-        console.print("Start Ollama to compare these settings with it next time.")
+        if hint:
+            console.print("Start Ollama to compare these settings with it.")
         return False
     llama_server = find_tool("llama-server")
     if llama_server is None:
@@ -1602,23 +1586,8 @@ def tune_model(
         console.print(f"{number:>3}. {describe(settings)}: {outcome(result)}")
 
 
-# The winner as a llama-server command (tune.py), for chatting with the model at these settings
-# in the browser, or from any app that talks to a local AI server. A path with spaces is quoted
-# so it can be pasted as it is, in PowerShell as well.
-
-
-def show_server_command(
-    best: RunResult, model_file: Path, placement: dict, tokens: int, threads, gpu: int
-) -> None:
-    server = find_tool("llama-server") or "llama-server"
-    flags = server_flags(best, placement, tokens, threads, gpu)
-    command = f"{quoted(server, program=True)} -m {quoted(str(model_file))} {flags}"
-    console.print("To chat with the model at these settings, start llama.cpp's server:")
-    console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
-    console.print(
-        f"Then open http://localhost:{SERVER_PORT} in your browser. It has room for a "
-        f"{server_context(tokens):,}-token conversation."
-    )
+# A path with spaces is quoted so a printed command can be pasted as it is, in PowerShell as
+# well.
 
 
 def quoted(text: str, program: bool = False) -> str:
@@ -1726,7 +1695,6 @@ def outcome(result: RunResult) -> str:
 
 def show_tune(
     runs: list[RunResult],
-    command_for: Callable[[RunResult], str],
     planned: int,
     split_of: Callable[[RunResult], str] | None = None,
 ) -> RunResult | None:
@@ -1787,9 +1755,6 @@ def show_tune(
     else:
         console.print(f"Fastest on this computer: {describe(winner)}.")
     show_trust(best, worked, runs)
-    console.print("To use these settings:")
-    command = f"  localtune measure {command_for(best)} {run_flags(best)}"
-    console.print(command, markup=False, highlight=False, soft_wrap=True)
     return best
 
 
@@ -2767,7 +2732,6 @@ def show_tune_quality(
     found: list[QualityResult] | None,
     cache: str,
     runs: list[RunResult],
-    command_for: Callable[[RunResult], str],
 ) -> bool:
     by_cache = {r.kv_cache: r for r in found or []}
     if "f16" not in by_cache or cache not in by_cache:
@@ -2781,12 +2745,13 @@ def show_tune_quality(
     f16 = fastest([run for run in runs if run.settings.kv_cache_k == "f16"])
     best = fastest(runs)
     if loss >= 1 and f16 is not None and best is not None:
+        s = f16.settings
+        kept = {"flash_attention": s.flash_attention, "kv_cache": s.kv_cache_k}
+        kept["ubatch_size"] = s.ubatch_size
         console.print(
-            f"The fastest f16 settings keep full quality, at {answer_seconds(f16):,.1f} s per "
-            f"answer instead of {answer_seconds(best):,.1f} s:"
+            f"The fastest f16 settings ({describe(kept)}) keep full quality, at "
+            f"{answer_seconds(f16):,.1f} s per answer instead of {answer_seconds(best):,.1f} s."
         )
-        command = f"  localtune measure {command_for(f16)} {run_flags(f16)}"
-        console.print(command, markup=False, highlight=False, soft_wrap=True)
     return True
 
 

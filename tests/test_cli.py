@@ -662,17 +662,26 @@ def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_pat
     assert "Trying 16 combinations" in result.output
     assert "out of GPU memory" in result.output
     assert "Fastest on this computer: flash attn on, KV q8_0, micro-batch 2048." in result.output
-    assert (
-        f"localtune measure {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048"
-        in result.output
-    )
     assert "Tuned is 15% faster than llama.cpp's usual settings" in result.output
-    server = f"llama-server -m {model} -c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 2048"
-    assert server in result.output
-    assert "room for a 4,096-token conversation" in result.output
     saved = load_results()
     assert len(saved) == 16
     assert len({run.tune_id for run in saved}) == 1 and saved[0].tune_id
+
+
+def test_tune_only_reports_and_leaves_out_how_to_run_the_model(monkeypatch, tmp_path):
+    wide_terminal(monkeypatch)
+    model = fake_run(monkeypatch, tmp_path, tuned_run)
+    result = runner.invoke(cli.app, ["tune", str(model)])
+    assert result.exit_code == 0
+    for left_out in (
+        "To use these settings",
+        "localtune measure",
+        "llama-server",
+        "localhost",
+        "Start Ollama",
+    ):
+        assert left_out not in result.output
+    assert result.output.rstrip().splitlines()[-1].startswith("All runs saved to")
 
 
 def test_tune_checks_the_quality_of_a_smaller_kv_cache(monkeypatch, tmp_path):
@@ -691,8 +700,10 @@ def test_tune_offers_f16_when_a_smaller_cache_costs_quality(monkeypatch, tmp_pat
     pretend_perplexity(monkeypatch, tmp_path, {"f16": 6.0, "q8_0": 6.12})
     result = runner.invoke(cli.app, ["tune", str(model)])
     assert "2.0% worse than f16, small, but there." in result.output
-    assert "keep full quality, at 1.3 s per answer instead of 1.2 s:" in result.output
-    assert "--kv-cache f16 --ubatch-size 2048" in result.output
+    assert (
+        "The fastest f16 settings (flash attn off, KV f16, micro-batch 2048) keep full quality, "
+        "at 1.3 s per answer instead of 1.2 s." in " ".join(result.output.split())
+    )
 
 
 def test_tune_reuses_an_earlier_quality_check(monkeypatch, tmp_path):
@@ -861,7 +872,7 @@ def test_tune_keeps_settings_that_arent_tuned(monkeypatch, tmp_path):
     wide_terminal(monkeypatch)
     model = fake_run(monkeypatch, tmp_path, remembers_options)
     result = runner.invoke(cli.app, ["tune", str(model), "--gpu-layers", "30"])
-    assert f"localtune measure {model} --gpu-layers 30 --flash-attn" in result.output
+    assert result.exit_code == 0
     assert {options.gpu_layers for options in asked} == {30}
 
 
@@ -924,8 +935,6 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "don't fit in the GPU's memory" in result.output
     assert "Fastest split: experts in RAM for 25 of 48 layers." in result.output
-    assert f"localtune measure {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
-    assert "-ngl 49 --n-cpu-moe 25 -fa on" in result.output
     assert len(load_results()) == 4 + 16
 
 
@@ -981,12 +990,9 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert "a 16,128-token conversation don't fit" in result.output
     first_split = asked[before]  # tried with the micro-batch that needs the most memory
     assert first_split.ubatch_size == 2048 and first_split.flash_attention
-    assert f"localtune measure {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
     assert "Trying 13 combinations" in result.output
-    assert "room for a 16,384-token conversation" in result.output
     result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
-    assert f"localtune measure {model} --use documents --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
 
 
@@ -1027,9 +1033,6 @@ def test_tune_gives_a_smaller_kv_cache_its_own_split(monkeypatch, tmp_path):
     assert "Fastest split with a q8_0 KV cache: the whole model on the GPU." in result.output
     assert "experts in RAM for 33 of 48 layers" in result.output  # the table's split column
     assert "whole model on the GPU" in result.output
-    assert "--use documents --gpu-layers 49 --cpu-moe 0 --flash-attn --kv-cache q8_0" in (
-        result.output
-    )
 
 
 def test_tune_stops_when_no_split_fits(monkeypatch, tmp_path):
