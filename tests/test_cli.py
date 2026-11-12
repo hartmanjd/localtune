@@ -66,6 +66,12 @@ def test_command_list_has_an_empty_line_after_each_command():
     assert rows[0] != "" and rows[-1] != ""
 
 
+def test_help_leaves_out_the_tab_completion_options():
+    output = runner.invoke(cli.app, ["--help"]).output
+    assert "--version" in re.sub(r"\x1b\[[0-9;]*m", "", output)
+    assert "completion" not in output
+
+
 def test_info_shows_the_hardware(monkeypatch):
     wide_terminal(monkeypatch)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
@@ -267,7 +273,8 @@ def test_doctor_refuses_a_folder_without_llama_bench(monkeypatch, tmp_path):
 
 
 def fake_run(monkeypatch, tmp_path, outcome):
-    # 'localtune run' with a pretend llama-bench that gives back the saved example run, or fails.
+    # 'localtune measure' with a pretend llama-bench that gives back the saved example run, or
+    # fails.
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(cli, "find_tool", lambda name: name)
     monkeypatch.setattr(cli, "detect_hardware", lambda: FAKE_PC)
@@ -303,6 +310,55 @@ def test_run_tests_the_lengths_of_a_use(monkeypatch, tmp_path):
     model = fake_run(monkeypatch, tmp_path, remembers_options)
     runner.invoke(cli.app, ["run", str(model), "--use", "code", "--gen-tokens", "64"])
     assert (asked[0].prompt_tokens, asked[0].gen_tokens) == (8000, 64)
+
+
+def test_measure_is_the_new_name_and_run_still_works(monkeypatch, tmp_path):
+    model = fake_run(monkeypatch, tmp_path, example_run)
+    assert runner.invoke(cli.app, ["measure", str(model)]).exit_code == 0
+    assert runner.invoke(cli.app, ["run", str(model)]).exit_code == 0
+    assert len(load_results()) == 2
+    listed = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli.app, ["--help"]).output)
+    assert "measure" in listed
+    assert not re.search(r"^\W*run\b", listed, re.MULTILINE)
+
+
+def test_measure_help_says_how_many_tokens_each_use_is(monkeypatch):
+    wide_terminal(monkeypatch)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli.app, ["measure", "--help"]).output)
+    output = re.sub(r"\s+", " ", re.sub(r"│", " ", output))
+    assert "code = 8,000 tokens in, 512 out" in output
+
+
+def test_measure_with_a_percent_fills_part_of_the_models_context(monkeypatch, tmp_path):
+    asked = []
+
+    def remembers_options(llama_bench, model, options, name=None):
+        asked.append(options)
+        return example_run(llama_bench, model, options, name)
+
+    model = fake_run(monkeypatch, tmp_path, remembers_options)
+    layout = ModelLayout(
+        layers=32, experts=None, expert_share=0.0, kv_bytes_per_token=1, context_length=40960
+    )
+    monkeypatch.setattr(cli, "read_layout", lambda path: layout)
+    result = runner.invoke(cli.app, ["measure", str(model), "--use", "30"])
+    assert result.exit_code == 0
+    assert (asked[0].prompt_tokens, asked[0].gen_tokens) == (12288 - 256, 256)
+    assert load_results()[0].use == "30%"
+
+
+def test_measure_with_a_percent_needs_llama_cpp(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["measure", "-b", "api", "--use", "30"])
+    assert result.exit_code == 1
+    assert "works with llama.cpp" in result.output
+
+
+def test_sweep_keeps_to_the_named_uses(monkeypatch, tmp_path):
+    fake_run(monkeypatch, tmp_path, example_run)
+    result = runner.invoke(cli.app, ["sweep", "qwen3:14b", "--use", "30"])
+    assert result.exit_code == 1
+    assert "needs to know the model's context" in result.output
 
 
 def test_run_refuses_an_unknown_use(monkeypatch, tmp_path):
@@ -467,7 +523,7 @@ def test_run_refuses_an_unknown_kv_cache_type(monkeypatch, tmp_path):
     assert load_results() == []
 
 
-# 'localtune run -b api' with a pretend server found on this computer, and a pretend runner that
+# 'localtune measure -b api' with a pretend server found on this computer, and a pretend runner that
 # gives back made-up speeds.
 
 OLLAMA = Server(name="Ollama", version="0.12.6", url="http://127.0.0.1:11434", models=["a", "b"])
@@ -580,7 +636,7 @@ def test_results_when_nothing_is_saved(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALTUNE_HOME", str(tmp_path))
     result = runner.invoke(cli.app, ["results"])
     assert result.exit_code == 0
-    assert "localtune run" in result.output
+    assert "localtune measure" in result.output
 
 
 def tuned_run(llama_bench, model, options, name=None):
@@ -606,7 +662,10 @@ def test_tune_tries_every_combination_and_shows_the_fastest(monkeypatch, tmp_pat
     assert "Trying 16 combinations" in result.output
     assert "out of GPU memory" in result.output
     assert "Fastest on this computer: flash attn on, KV q8_0, micro-batch 2048." in result.output
-    assert f"localtune run {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048" in result.output
+    assert (
+        f"localtune measure {model} --flash-attn --kv-cache q8_0 --ubatch-size 2048"
+        in result.output
+    )
     assert "Tuned is 15% faster than llama.cpp's usual settings" in result.output
     server = f"llama-server -m {model} -c 4096 -ngl 999 -fa on -ctk q8_0 -ctv q8_0 -ub 2048"
     assert server in result.output
@@ -802,7 +861,7 @@ def test_tune_keeps_settings_that_arent_tuned(monkeypatch, tmp_path):
     wide_terminal(monkeypatch)
     model = fake_run(monkeypatch, tmp_path, remembers_options)
     result = runner.invoke(cli.app, ["tune", str(model), "--gpu-layers", "30"])
-    assert f"localtune run {model} --gpu-layers 30 --flash-attn" in result.output
+    assert f"localtune measure {model} --gpu-layers 30 --flash-attn" in result.output
     assert {options.gpu_layers for options in asked} == {30}
 
 
@@ -865,7 +924,7 @@ def test_tune_first_splits_a_model_too_big_for_the_gpu(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "don't fit in the GPU's memory" in result.output
     assert "Fastest split: experts in RAM for 25 of 48 layers." in result.output
-    assert f"localtune run {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
+    assert f"localtune measure {model} --gpu-layers 49 --cpu-moe 25 --flash-attn" in result.output
     assert "-ngl 49 --n-cpu-moe 25 -fa on" in result.output
     assert len(load_results()) == 4 + 16
 
@@ -922,12 +981,12 @@ def test_tune_leaves_room_for_a_long_prompt(monkeypatch, tmp_path):
     assert "a 16,128-token conversation don't fit" in result.output
     first_split = asked[before]  # tried with the micro-batch that needs the most memory
     assert first_split.ubatch_size == 2048 and first_split.flash_attention
-    assert f"localtune run {model} --prompt-tokens 16000 --gpu-layers" in result.output
+    assert f"localtune measure {model} --prompt-tokens 16000 --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
     assert "Trying 13 combinations" in result.output
     assert "room for a 16,384-token conversation" in result.output
     result = runner.invoke(cli.app, ["tune", str(model), "--use", "documents"])
-    assert f"localtune run {model} --use documents --gpu-layers" in result.output
+    assert f"localtune measure {model} --use documents --gpu-layers" in result.output
     assert asked[-1].prompt_tokens == 16000
 
 

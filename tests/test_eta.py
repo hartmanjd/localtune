@@ -1,4 +1,4 @@
-# Tests for the time left "localtune run", "tune" and "sweep" show. They use the real model and
+# Tests for the time left "localtune measure", "tune" and "sweep" show. They use the real model and
 # GPU tables, with runs saved on this computer (the rig_id in LOCALTUNE_HOME) and on another.
 
 import pytest

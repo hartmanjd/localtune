@@ -9,7 +9,7 @@
 #   - the micro-batch size: how many prompt tokens the GPU works on at once, which mostly
 #     changes how fast a prompt is read.
 # "localtune tune" (cli.py) benchmarks every combination below, one after another, saving each
-# run like "localtune run" does. Together the runs say which settings are fastest on this
+# run like "localtune measure" does. Together the runs say which settings are fastest on this
 # computer, and they are exactly the kind of data the prediction model learns from: the same
 # model and GPU with only the settings changed.
 
@@ -129,7 +129,7 @@ def default_run(runs: list[RunResult]) -> RunResult | None:
     return None
 
 
-# The "localtune run" options that repeat the winner's tuned settings, so it can be used again.
+# The "localtune measure" options that repeat the winner's tuned settings, so it can be used again.
 
 
 def run_flags(run: RunResult) -> str:

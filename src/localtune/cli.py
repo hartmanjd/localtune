@@ -1,7 +1,7 @@
 """The localtune terminal command."""
 
 # Everything a person types in the terminal ("localtune info", "localtune doctor",
-# "localtune predict", "localtune run", "localtune tune", "localtune sweep",
+# "localtune predict", "localtune measure", "localtune tune", "localtune sweep",
 # "localtune results", "localtune share", "localtune speculate" and "localtune monitor") starts
 # here.
 # This file only handles the conversation with the person: it asks other modules for the
@@ -208,9 +208,19 @@ from localtune.tune import (
     split_settings,
     too_full,
 )
-from localtune.uses import USES, UnknownUseError, token_lengths
+from localtune.uses import (
+    USE_SIZES,
+    USES,
+    UnknownUseError,
+    token_lengths,
+    use_label,
+    use_percent,
+)
 
-app = typer.Typer()
+# The two tab-completion options typer adds by itself are left out: they crowd the help of a
+# tool whose commands are short enough to type.
+
+app = typer.Typer(add_completion=False)
 console = Console()
 
 # The help screens are at most 80 columns wide, and narrower in a narrower window, so their boxes
@@ -259,7 +269,7 @@ if typer_command_list is not None:
 # animation runs beside what they're doing. The commands that benchmark keep the computer from
 # going to sleep until they end (awake.py).
 
-BENCHMARK_COMMANDS = {"run", "tune", "sweep"}
+BENCHMARK_COMMANDS = {"measure", "run", "tune", "sweep"}
 
 
 def show_version(value: bool) -> None:
@@ -359,7 +369,10 @@ def info() -> None:
 def predict_command(
     model: Annotated[str, typer.Argument(help="A model's Ollama name, like qwen3:14b.")],
     use: str | None = typer.Option(
-        None, help="What the model is for: chat, code or documents. Longer uses need more memory."
+        None,
+        help=f"What the model is for: chat, code or documents ({USE_SIZES}), or a percent of "
+        "the biggest context the model can have on this computer, like 30. Longer uses need "
+        "more memory.",
     ),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
     gpu_name: str | None = typer.Option(
@@ -367,7 +380,7 @@ def predict_command(
     ),
 ) -> None:
     """Estimate whether a model fits and how fast it will write, before downloading it."""
-    prompt_tokens, gen_tokens = lengths_for(use, None, None)
+    lengths_for(use, None, None, context=0)
     found = find_model(model)
     if found is None:
         console.print(
@@ -410,8 +423,6 @@ def predict_command(
     cards = 1 if gpu_name else len(hw.gpus)
     if cards > 1:
         spec = spec.model_copy(update={"vram_gb": shared_vram_gb(hw.gpus, gpu)})
-    tokens = prompt_tokens + gen_tokens
-    p = predict(*found, spec, tokens, hw.ram_gb)
     table_model, file = found
     room = biggest_context(
         file.size_bytes,
@@ -419,6 +430,11 @@ def predict_command(
         spec.vram_gb,
         table_model.context_length,
     )
+    prompt_tokens, gen_tokens = lengths_for(
+        use, None, None, context=room or table_model.context_length
+    )
+    tokens = prompt_tokens + gen_tokens
+    p = predict(*found, spec, tokens, hw.ram_gb)
     trained = None
     facts = model_facts(model)
     if p.decode_tok_s is not None and facts is not None and cards == 1:
@@ -450,7 +466,8 @@ def show_prediction(
     on = p.gpu if cards == 1 else f"{cards} GPUs ({p.gpu} first)"
     table = Table(title=f"Estimate for {p.model} on {on}", show_header=False)
     table.add_row("Model file", f"{p.file_gb:.1f} GB ({p.quant})")
-    table.add_row(f"Conversation ({use or 'short chat'})", f"{p.conversation_gb:.1f} GB")
+    kind = f"{use_label(use)} of the context" if use_percent(use) else use or "short chat"
+    table.add_row(f"Conversation ({kind})", f"{p.conversation_gb:.1f} GB")
     total = p.vram_gb + RESERVED_GB * (cards - 1)  # shared_vram_gb took this off for the fit
     memory = f"{total:g} GB" + (f" over {cards} GPUs" if cards > 1 else "")
     table.add_row("GPU memory", f"{memory}, {p.memory_bandwidth_gbs:,.0f} GB/s")
@@ -492,7 +509,8 @@ def show_prediction(
     console.print(
         "To measure it for real" + (":" if downloaded else ", downloading the model first:")
     )
-    console.print(f"  localtune run {p.model}", markup=False, highlight=False)
+    flag = f" --use {use}" if use else ""
+    console.print(f"  localtune measure {p.model}{flag}", markup=False, highlight=False)
     if room is not None and proven is None and cards == 1:
         console.print("To measure the biggest context:")
         console.print(f"  localtune context {p.model}", markup=False, highlight=False)
@@ -686,18 +704,18 @@ def keep_llama_dir(folder: Path) -> bool:
     return True
 
 
-# "localtune run": benchmarks a model and saves the result. With llama.cpp (the default) it
-# benchmarks a model file; with "-b api" it benchmarks a model in a local AI server that's
-# already running (runners/web_api.py), found by itself or at --url. While the engine runs, the
-# GPU is watched and its energy measured (runners/base.py); afterwards the speeds and energy
-# are shown, and the run is added to the results file (results.py). A failed run is saved too,
-# and ends with an error code.
+# "localtune measure" (called "localtune run" before, which still works): benchmarks a model and
+# saves the result. With llama.cpp (the default) it benchmarks a model file; with "-b api" it
+# benchmarks a model in a local AI server that's already running (runners/web_api.py), found by
+# itself or at --url. While the engine runs, the GPU is watched and its energy measured
+# (runners/base.py); afterwards the speeds and energy are shown, and the run is added to the results
+# file (results.py). A failed run is saved too, and ends with an error code.
 
 BACKENDS = ("llama.cpp", "api")
 
 
-@app.command()
-def run(
+@app.command("measure")
+def measure_command(
     model: Annotated[
         str | None,
         typer.Argument(
@@ -712,7 +730,9 @@ def run(
         None, help="-b api: the server's address, like http://localhost:11434, if not found."
     ),
     use: str | None = typer.Option(
-        None, help="What the model is for: chat, code or documents. Sets the lengths below."
+        None,
+        help=f"What the model is for: chat, code or documents ({USE_SIZES}), or a percent of "
+        "the biggest context the model can have on this computer, like 30. Sets the lengths below.",
     ),
     prompt_tokens: int | None = typer.Option(
         None, help="Length of the prompt the model reads (512 unless --use says otherwise)."
@@ -734,8 +754,9 @@ def run(
     ubatch_size: int | None = typer.Option(None, help="Prompt micro-batch size."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
 ) -> None:
-    """Benchmark a model with llama.cpp or a local AI server, and save the result."""
-    prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
+    """Measure a model's speed with llama.cpp or a local AI server, and save the result."""
+    given_prompt, given_gen = prompt_tokens, gen_tokens
+    prompt_tokens, gen_tokens = lengths_for(use, given_prompt, given_gen, context=0)
     if backend not in BACKENDS:
         console.print(f"Unknown backend {backend}. Choose from: {', '.join(BACKENDS)}")
         raise typer.Exit(1)
@@ -757,6 +778,12 @@ def run(
                 "it was started with."
             )
             raise typer.Exit(1)
+        if use_percent(use) is not None:
+            console.print(
+                f"--use {use} works with llama.cpp, which can read the model's context. With "
+                "-b api, choose chat, code or documents, or give --prompt-tokens."
+            )
+            raise typer.Exit(1)
         options = ApiOptions(
             prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, repetitions=repetitions
         )
@@ -767,6 +794,9 @@ def run(
         background = None  # the server holds its model on the GPU, so no warning
     else:
         llama_bench, model_file, model_name = prepare_llama_cpp(model, kv_cache)
+        if use_percent(use) is not None:
+            context = usable_context(model_file, gpu, kv_cache or "f16")
+            prompt_tokens, gen_tokens = lengths_for(use, given_prompt, given_gen, context)
         background = warn_if_busy(gpu)
         if gpu_layers is None and cpu_moe is None:
             split = starting_split(model_file, gpu, prompt_tokens + gen_tokens, kv_cache)
@@ -803,7 +833,7 @@ def run(
     left, rough = (guess.seconds, guess.rough) if guess else (None, False)
     with working(console, "run", label, left_s=left, rough=rough):
         result = measure(engine, requested, repetitions, gpu_index=gpu, background=background)
-    result.use = use
+    result.use = use_label(use)
     path = save_result(result)
 
     if result.status != "ok":
@@ -815,16 +845,51 @@ def run(
     console.print(f"Saved to {path}")
 
 
+app.command("run", hidden=True)(measure_command)
+
+
 # --use picks the prompt and answer lengths for a kind of use (uses.py); --prompt-tokens and
-# --gen-tokens still win when given.
+# --gen-tokens still win when given. A percent use needs the model's usable context: the
+# biggest one that fits on the GPU with the whole model (tune.biggest_context), or the model's
+# own limit when the model doesn't fit there anyway. Commands check the use first with
+# context=0, so a typo stops them before they load anything.
 
 
-def lengths_for(use: str | None, prompt_tokens: int | None, gen_tokens: int | None):
+def lengths_for(
+    use: str | None, prompt_tokens: int | None, gen_tokens: int | None, context: int | None = None
+):
     try:
-        return token_lengths(use, prompt_tokens, gen_tokens)
+        return token_lengths(use, prompt_tokens, gen_tokens, context)
     except UnknownUseError as error:
-        console.print(str(error))
+        console.print(str(error), markup=False)
         raise typer.Exit(1) from None
+
+
+def usable_context(model_file: Path, gpu: int, kv_cache: str = "f16") -> int:
+    try:
+        layout = read_layout(model_file)
+    except (GgufError, OSError) as error:
+        console.print(f"Can't read {model_file.name}: {error}", markup=False)
+        raise typer.Exit(1) from error
+    gpus = detect_hardware().gpus
+    room = None
+    if gpu < len(gpus) and kv_cache in KV_CACHE_SIZE:
+        room = biggest_context(
+            model_file.stat().st_size,
+            layout.kv_bytes_per_token,
+            shared_vram_gb(gpus, gpu),
+            layout.context_length,
+            kv_cache,
+        )
+    context = room or layout.context_length
+    if not context:
+        console.print(
+            f"{model_file.name} doesn't say how long its context is, so a percent can't be "
+            "worked out. Choose chat, code or documents, or give --prompt-tokens.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    return context
 
 
 # Before llama.cpp benchmarks anything, a quick look at what else the computer is doing
@@ -1126,12 +1191,12 @@ def show_overflow(result: RunResult) -> None:
 
 # "localtune tune": benchmarks one model with every combination of settings in tune.py, one
 # run after another, and shows which was fastest on this computer, with the options that use
-# it in "localtune run". Each run is saved like a "localtune run" (with the same tune_id), so
-# the whole session becomes data. It says how long is left, estimated from the runs so far,
-# and Ctrl+C stops it with the finished runs kept. Settings that aren't tuned, like how many
-# layers go on the GPU, can be fixed for every run, which is how a model too big for the GPU
-# gets tuned. When a q8_0 or q4_0 KV cache wins, it then measures how much that cache changes
-# the answers (quality.py), since speed tests can't see it.
+# it in "localtune measure". Each run is saved like a "localtune measure" (with the same
+# tune_id), so the whole session becomes data. It says how long is left, estimated from the
+# runs so far, and Ctrl+C stops it with the finished runs kept. Settings that aren't tuned,
+# like how many layers go on the GPU, can be fixed for every run, which is how a model too big
+# for the GPU gets tuned. When a q8_0 or q4_0 KV cache wins, it then measures how much that
+# cache changes the answers (quality.py), since speed tests can't see it.
 
 
 @app.command()
@@ -1141,7 +1206,9 @@ def tune(
         typer.Argument(help="The model file (.gguf) or a model downloaded with Ollama."),
     ] = None,
     use: str | None = typer.Option(
-        None, help="What the model is for: chat, code or documents. Sets the lengths below."
+        None,
+        help=f"What the model is for: chat, code or documents ({USE_SIZES}), or a percent of "
+        "the biggest context the model can have on this computer, like 30. Sets the lengths below.",
     ),
     prompt_tokens: int | None = typer.Option(
         None, help="Length of the prompt the model reads (512 unless --use says otherwise)."
@@ -1169,8 +1236,12 @@ def tune(
 ) -> None:
     """Try llama.cpp's main settings on a model and find the fastest on this computer."""
     given_prompt, given_gen = prompt_tokens, gen_tokens
-    prompt_tokens, gen_tokens = lengths_for(use, prompt_tokens, gen_tokens)
+    prompt_tokens, gen_tokens = lengths_for(use, given_prompt, given_gen, context=0)
     llama_bench, model_file, model_name = prepare_llama_cpp(model)
+    if use_percent(use) is not None:
+        context = usable_context(model_file, gpu)
+        prompt_tokens, gen_tokens = lengths_for(use, given_prompt, given_gen, context)
+    use = use_label(use)
     warn_if_busy(gpu)
     session = TuneSession(given={"gpu_layers": gpu_layers, "cpu_moe_layers": cpu_moe})
     guess = session_guess(
@@ -1265,7 +1336,9 @@ def tune(
 @app.command()
 def compare(
     model: Annotated[str, typer.Argument(help="A model downloaded with Ollama, tuned before.")],
-    use: str | None = typer.Option(None, help="The use it was tuned for: chat, code or documents."),
+    use: str | None = typer.Option(
+        None, help=f"The use it was tuned for: chat, code or documents ({USE_SIZES})."
+    ),
     repetitions: int = typer.Option(3, help="How many times each test is repeated."),
     gpu: int = typer.Option(0, help="Which GPU to use, by its # from 'localtune info'."),
 ) -> None:
@@ -1715,7 +1788,7 @@ def show_tune(
         console.print(f"Fastest on this computer: {describe(winner)}.")
     show_trust(best, worked, runs)
     console.print("To use these settings:")
-    command = f"  localtune run {command_for(best)} {run_flags(best)}"
+    command = f"  localtune measure {command_for(best)} {run_flags(best)}"
     console.print(command, markup=False, highlight=False, soft_wrap=True)
     return best
 
@@ -1764,7 +1837,7 @@ def show_trust(best: RunResult, worked: list[RunResult], runs: list[RunResult]) 
 # "localtune sweep": benchmarks many models one after another, each for every chosen use
 # (uses.py), so a computer left alone overnight turns into a lot of data. With no models named
 # it takes every model downloaded with Ollama. Each run is llama.cpp's usual settings, like
-# "localtune run" without options, except that a model too big for the GPU starts from tune's
+# "localtune measure" without options, except that a model too big for the GPU starts from tune's
 # first guess at a GPU/RAM split (tune.py), so it doesn't crawl. The runs share a sweep_id and
 # each is saved as soon as it finishes; Ctrl+C stops the sweep with the finished runs kept, and
 # a model that fails is noted and skipped. While it runs it shows how long the whole sweep has
@@ -1785,7 +1858,10 @@ def sweep(
     ] = None,
     use: Annotated[
         list[str] | None,
-        typer.Option(help="What the models are for; repeat to test several. All three if none."),
+        typer.Option(
+            help=f"What the models are for: chat, code or documents ({USE_SIZES}). Repeat to "
+            "test several. All three if none."
+        ),
     ] = None,
     tune: bool = typer.Option(
         False, "--tune", help="Tune every model for every use, like 'localtune tune'. Takes hours."
@@ -2573,7 +2649,8 @@ def quality(
     ),
     use: str | None = typer.Option(
         None,
-        help="Read the text in chunks as long as a use's conversation: chat, code or documents.",
+        help="Read the text in chunks as long as a use's conversation: chat, code or documents "
+        f"({USE_SIZES}).",
     ),
     context: int | None = typer.Option(
         None, help=f"How many tokens each chunk of text has (default {CONTEXT:,})."
@@ -2708,7 +2785,7 @@ def show_tune_quality(
             f"The fastest f16 settings keep full quality, at {answer_seconds(f16):,.1f} s per "
             f"answer instead of {answer_seconds(best):,.1f} s:"
         )
-        command = f"  localtune run {command_for(f16)} {run_flags(f16)}"
+        command = f"  localtune measure {command_for(f16)} {run_flags(f16)}"
         console.print(command, markup=False, highlight=False, soft_wrap=True)
     return True
 
@@ -2840,7 +2917,7 @@ def download_for_samples(url: str, model: str, place: str) -> bool:
     return True
 
 
-# "localtune results": shows the runs saved by "localtune run" (results.py) as one table, so
+# "localtune results": shows the runs saved by "localtune measure" (results.py) as one table, so
 # runs with different models, engines and settings can be compared side by side. Failed runs
 # are listed too, because knowing which settings don't work is part of tuning.
 
@@ -2859,7 +2936,7 @@ def results(
     if model:
         runs = [r for r in runs if model.lower() in r.settings.model.lower()]
     if not runs:
-        console.print("No saved runs yet. Benchmark a model with 'localtune run'.")
+        console.print("No saved runs yet. Benchmark a model with 'localtune measure'.")
         return
     if csv_file:
         save_csv(runs, csv_file)
