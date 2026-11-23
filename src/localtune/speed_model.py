@@ -18,10 +18,11 @@ import math
 from importlib.resources import files
 from pathlib import Path
 
+from localtune.cpus import ram_bandwidth_gbs
 from localtune.features import FEATURES, inputs, number
 from localtune.gpus import GpuSpec
 from localtune.hardware import HardwareInfo
-from localtune.predict import Prediction, estimate_for, several_gpus
+from localtune.predict import Prediction, estimate_for, several_gpus, with_conversation
 from localtune.results import ModelFacts, RunResult, RunSettings, flat_record, flatten, home_dir
 from localtune.runners.llamacpp import DEPTH_FROM
 from localtune.tune import DEFAULT_UBATCH
@@ -84,7 +85,9 @@ def trained_for_run(run: RunResult) -> float | None:
 # RAM speed, the model's starting point. When the model doesn't all fit on the GPU, it is split the
 # way the formula assumes: a dense model keeps as many of its layers on the GPU as fit, a
 # mixture-of-experts model keeps every layer there and moves just enough layers' experts to RAM.
-# Nothing moved is 0, as llama.cpp reports it on every saved run, not a missing value.
+# Nothing moved is 0, as llama.cpp reports it on every saved run, not a missing value. The
+# starting point then adds reading the conversation so far for each word (predict.py), as it does
+# for a saved run.
 
 
 def planned_run(
@@ -118,7 +121,15 @@ def planned_run(
         "gpu_facts": gpu.model_dump(mode="json"),
         "estimate": {
             "decode_tok_s": p.decode_tok_s,
-            "own_ram_decode_tok_s": (own_ram or p).decode_tok_s,
+            "own_ram_decode_tok_s": with_conversation(
+                (own_ram or p).decode_tok_s,
+                facts,
+                gpu,
+                ram_bandwidth_gbs(hardware.cpu_name, hardware.cpu_threads),
+                settings.decode_depth,
+                settings.kv_cache_k,
+                settings.gpu_layers,
+            ),
         },
     }
     return flatten(run)

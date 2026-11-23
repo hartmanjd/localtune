@@ -12,7 +12,7 @@ from localtune.gpu_monitor import GpuSummary
 from localtune.gpus import find_gpu_spec
 from localtune.hardware import GpuInfo, HardwareInfo
 from localtune.models import find_model
-from localtune.predict import estimate_for, kept_in_ram, predict
+from localtune.predict import conversation_seconds, estimate_for, kept_in_ram, predict
 from localtune.results import RunResult, RunSettings, Speed, energy_used, model_facts
 
 runner = CliRunner()
@@ -168,6 +168,44 @@ def test_layers_kept_in_ram_count_in_the_starting_point():
 
     assert estimate_for(run(16)) == pytest.approx(estimate_for(run(None)))
     assert estimate_for(run(16), own_ram=True) < estimate_for(run(None), own_ram=True) / 3
+
+
+# Deep into a long document, each word also reads the conversation so far. The plain formula
+# leaves it out; the starting point counts it, more slowly for the layers left in RAM.
+
+
+def test_reading_the_conversation_slows_the_starting_point_not_the_formula():
+    facts = model_facts("qwen3:8b")
+
+    def run(depth, gpu_layers=None, kv="f16"):
+        settings = RunSettings(
+            engine="llama.cpp",
+            model="qwen3:8b",
+            decode_depth=depth,
+            gpu_layers=gpu_layers,
+            kv_cache_k=kv,
+            kv_cache_v=kv,
+        )
+        return saved_run(settings=settings, model_facts=facts)
+
+    assert estimate_for(run(16000)) == pytest.approx(estimate_for(run(None)))
+    assert estimate_for(run(16000), own_ram=True) < estimate_for(run(None), own_ram=True)
+    assert estimate_for(run(16000, kv="q8_0"), own_ram=True) > estimate_for(
+        run(16000), own_ram=True
+    )
+    on_gpu = conversation_seconds(facts, GPU, 51.2, 16000)
+    split = conversation_seconds(facts, GPU, 51.2, 16000, gpu_layers=facts.layers // 2)
+    assert split > 5 * on_gpu
+
+
+def test_models_that_only_look_back_partly_read_less_of_the_conversation():
+    llama, gemma = model_facts("llama3.1:8b"), model_facts("gemma4:26b")
+    whole = conversation_seconds(llama, GPU, 51.2, 16000)
+    as_gemma = conversation_seconds(
+        llama.model_copy(update={"architecture": "gemma4"}), GPU, 51.2, 16000
+    )
+    assert as_gemma == pytest.approx(whole / 6)
+    assert gemma.architecture == "gemma4"
 
 
 def test_experts_kept_in_ram_are_part_of_the_file():

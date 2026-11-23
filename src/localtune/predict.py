@@ -22,7 +22,7 @@ from localtune.gpus import GpuSpec
 from localtune.hardware import HardwareInfo
 from localtune.models import ModelFile, ModelSpec
 from localtune.results import ModelFacts, RunResult
-from localtune.tune import RESERVED_GB
+from localtune.tune import KV_CACHE_SIZE, RESERVED_GB
 
 GIB = 1024**3
 EFFICIENCY = 0.55
@@ -126,7 +126,15 @@ def estimate_for(run: RunResult, own_ram: bool = False) -> float | None:
     facts, gpu, speed, s = run.model_facts, run.gpu_facts, run.speed, run.settings
     tokens = (speed.prompt_tokens + speed.generated_tokens) // max(1, run.repetitions)
     return own_ram_estimate(
-        facts, gpu, run.hardware, tokens, s.threads, s.gpu_layers, s.cpu_moe_layers
+        facts,
+        gpu,
+        run.hardware,
+        tokens,
+        s.threads,
+        s.gpu_layers,
+        s.cpu_moe_layers,
+        s.decode_depth,
+        s.kv_cache_k,
     )
 
 
@@ -165,11 +173,71 @@ def own_ram_estimate(
     threads: int | None = None,
     gpu_layers: int | None = None,
     cpu_moe_layers: int | None = None,
+    depth: int | None = None,
+    kv_cache: str | None = None,
 ) -> float | None:
     file = ModelFile(quant=facts.quant, size_bytes=facts.file_bytes, ollama=facts.name, source="")
     ram_bandwidth = ram_bandwidth_gbs(hardware.cpu_name, threads or hardware.cpu_threads)
     forced = kept_in_ram(facts, gpu_layers, cpu_moe_layers)
-    return predict(facts, file, gpu, tokens, hardware.ram_gb, ram_bandwidth, forced).decode_tok_s
+    decode = predict(facts, file, gpu, tokens, hardware.ram_gb, ram_bandwidth, forced).decode_tok_s
+    return with_conversation(decode, facts, gpu, ram_bandwidth, depth, kv_cache, gpu_layers)
+
+
+# Every new word also reads the conversation so far: the key and value each layer kept for every
+# earlier token (the KV cache). Early in a chat that is tiny, but deep into a long document it is
+# gigabytes per word, as much as half the model itself, and the formula above leaves it out. So
+# the trained model's starting point adds it, read where it lives: llama.cpp keeps a layer's
+# part of the conversation next to the layer, so the layers left in RAM with --gpu-layers have
+# theirs read at RAM speed and the rest at GPU speed (--cpu-moe moves only experts, so the
+# conversation stays on the GPU). A smaller cache type (tune.KV_CACHE_SIZE) is less to read.
+#
+# Not every model keeps the whole conversation in every layer. FULL_CONVERSATION is the share
+# of a model's layers that do, by the architecture name the model file gives: gpt-oss alternates
+# layers that look back over the whole conversation with layers that only see the last 128
+# tokens; Gemma 3 and 4 keep 1 full layer in every 6, the others seeing the last 1,024 tokens (512
+# on the smallest);
+# Qwen 3.5 keeps 1 in every 4, the others carrying a small fixed-size memory instead (from each
+# model's published config). Every other architecture reads it all. What the windowed layers
+# read is small next to a long document, so it's left out.
+
+FULL_CONVERSATION = {"gpt-oss": 1 / 2, "gemma3": 1 / 6, "gemma4": 1 / 6, "qwen35": 1 / 4}
+
+
+def with_conversation(
+    decode: float | None,
+    facts: ModelFacts,
+    gpu: GpuSpec,
+    ram_bandwidth: float | None,
+    depth: int | None,
+    kv_cache: str | None = None,
+    gpu_layers: int | None = None,
+) -> float | None:
+    if not decode or not depth:
+        return decode
+    extra = conversation_seconds(
+        facts, gpu, ram_bandwidth or RAM_BANDWIDTH_GBS, depth, kv_cache, gpu_layers
+    )
+    return EFFICIENCY / (EFFICIENCY / decode + extra)
+
+
+def conversation_seconds(
+    facts: ModelFacts,
+    gpu: GpuSpec,
+    ram_bandwidth: float,
+    depth: int,
+    kv_cache: str | None = None,
+    gpu_layers: int | None = None,
+) -> float:
+    size = KV_CACHE_SIZE.get(kv_cache or "f16", 1.0)
+    full = FULL_CONVERSATION.get(facts.architecture, 1.0)
+    read = depth * kv_bytes_per_token(facts) * size * full
+    layers = facts.layers
+    in_ram = 0.0
+    if gpu_layers is not None and 0 <= gpu_layers < layers:
+        in_ram = (layers - gpu_layers) / layers
+    return read * (1 - in_ram) / (gpu.memory_bandwidth_gbs * 1e9) + read * in_ram / (
+        ram_bandwidth * 1e9
+    )
 
 
 # How many bytes of the model a run's settings keep in RAM. --gpu-layers N leaves the other
