@@ -32,8 +32,18 @@ def test_finds_a_gpu_by_its_nvidia_smi_name(name, vram_gb, bandwidth):
     assert find_gpu_spec(name, vram_gb).memory_bandwidth_gbs == bandwidth
 
 
-def test_laptop_and_unknown_gpus_are_not_guessed():
-    assert find_gpu_spec("NVIDIA GeForce RTX 4070 Laptop GPU", 8.0) is None
+def test_a_laptop_gpu_is_its_own_row_never_the_desktop_card():
+    laptop = find_gpu_spec("NVIDIA GeForce RTX 4070 Laptop GPU", 8.0)
+    assert laptop.name == "RTX 4070 Laptop GPU" and laptop.memory_bandwidth_gbs == 256
+    assert find_gpu_spec("NVIDIA GeForce RTX 4070", 12.0).memory_bandwidth_gbs == 504
+    assert find_gpu_spec("NVIDIA GeForce RTX 3080 Laptop GPU", 8.0).vram_gb == 8
+    assert find_gpu_spec("NVIDIA GeForce RTX 5070 Laptop GPU", 12.0).vram_gb == 12
+    assert find_gpu_spec("NVIDIA GeForce RTX 3050 6GB Laptop GPU", 6.0).vram_gb == 6
+
+
+def test_small_laptop_and_unknown_gpus_are_not_guessed():
+    assert find_gpu_spec("NVIDIA GeForce RTX 3050 Laptop GPU", 4.0) is None  # the 4 GB one
+    assert find_gpu_spec("NVIDIA GeForce RTX 3050 Ti Laptop GPU", 4.0) is None
     assert find_gpu_spec("Some Future GPU", 16.0) is None
 
 

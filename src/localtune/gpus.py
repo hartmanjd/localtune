@@ -14,10 +14,16 @@
 # and clock speed but not FP32 TFLOPS, the TFLOPS are worked out as cores x boost clock x 2.
 # Where NVIDIA doesn't list the memory bandwidth, the row says whether it matches llmfit's
 # table (github.com/AlexsJones/llmfit, MIT license) or was worked out from the memory bus
-# width NVIDIA lists and the card's memory speed. Laptop GPUs aren't included: they share names
-# with desktop cards but have slower memory. A few cards were also sold with slower memory
-# under the same name and size (an RTX 4070 with GDDR6, an RTX 3060 Ti with GDDR6X); the
-# table has the common version.
+# width NVIDIA lists and the card's memory speed. Laptop GPUs from the RTX 30 series on are
+# listed under the name nvidia-smi gives them ("RTX 4060 Laptop GPU"), so they never match the
+# faster desktop card of the same number. NVIDIA lists no memory speed for most laptop cards,
+# so their bandwidth is worked out from the bus width at that generation's usual speed. Their
+# TFLOPS are at the top boost clock, the laptop's highest power; a thin laptop running its
+# card at lower power is slower. The 4 GB RTX 3050 and 3050 Ti laptops are left out (too
+# little memory for localtune's models), and RTX 20 series laptops report the desktop name,
+# so they match the desktop row and are estimated a little fast. A few cards
+# were also sold with slower memory under the same name and size (an RTX 4070 with GDDR6, an
+# RTX 3060 Ti with GDDR6X); the table has the common version.
 
 import csv
 from importlib.resources import files
